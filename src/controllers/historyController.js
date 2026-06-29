@@ -71,3 +71,24 @@ exports.deleteHistory = (req, res) => {
         res.json({ status: "success", message: `ลบประวัติ ID: ${id} ออกจากฐานข้อมูลแล้ว` });
     });
 };
+
+exports.getDailyTrainSummary = (req, res) => {
+    // 💥 ใช้ DATE_FORMAT จัดกลุ่มข้อมูล history ตามวัน/เดือน/ปี เพื่อดึงรอบรวมและความแม่นยำเฉลี่ยออกรายวัน
+    // เปลี่ยนคอลัมน์ 'created_at' หรือชื่อฟิลด์วันที่ในตารางของคุณให้ตรงจุด (เช่น train_date หรือ timestamp)
+    const sql = `
+        SELECT DATE_FORMAT(created_at, '%Y-%m-%d') AS date,
+               SUM(count) AS count,
+               ROUND(AVG(accuracy), 0) AS percentage
+        FROM history
+        GROUP BY DATE_FORMAT(created_at, '%Y-%m-%d')
+        ORDER BY date ASC
+        LIMIT 15
+    `;
+
+    db.query(sql, (err, results) => {
+        if (err) {
+            return res.status(500).json({ error: "ไม่สามารถคำนวณข้อมูลสถิติได้", details: err.message });
+        }
+        res.json(results);
+    });
+};

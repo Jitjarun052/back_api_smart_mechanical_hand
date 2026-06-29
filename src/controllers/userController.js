@@ -1,6 +1,9 @@
 const db = require('../config/db');
 const multer = require('multer');
 const path = require('path');
+const jwt = require('jsonwebtoken');
+
+const JWT_SECRET = 'YOUR_SUPER_SECRET_KEY_2026';
 
 // 📸 1. ตั้งค่าการจัดเก็บไฟล์รูปภาพ
 const storage = multer.diskStorage({
@@ -95,7 +98,6 @@ exports.register = async (req, res) => {
 exports.login = (req, res) => {
     const { email, password } = req.body;
 
-    // JOIN ตาราง doctors เพื่อดึงข้อมูลหมอมาแสดงในหน้าโปรไฟล์พร้อมกันเลย
     const sql = `
         SELECT u.*, d.name AS doctor_name, d.specialty AS doctor_specialty, d.hospital_name, d.hospital_phone 
         FROM user u
@@ -107,40 +109,68 @@ exports.login = (req, res) => {
         if (err) {
             return res.status(500).json({ error: "เกิดข้อผิดพลาดในการตรวจสอบข้อมูล", details: err.message });
         }
-        
         if (results.length === 0) {
             return res.status(401).json({ error: "อีเมลหรือรหัสผ่านไม่ถูกต้อง" });
         }
 
         const user = results[0];
 
-        // ดักสถานะบัญชีถูกระงับ
         if (user.status === 1) {
             return res.status(403).json({ error: "บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
         }
 
-        // ส่งก้อนข้อมูลกลับหน้าบ้านเอาไปใช้ต่อในหน้าแสดงประวัติและแพทย์ประจำตัว
+        // 🔑 สร้าง Token โดยฝังข้อมูลสิทธิ์และไอดีไว้ข้างใน (มีอายุใช้งาน 1 วัน)
+        const token = jwt.sign(
+            { user_id: user.user_id, role: user.role }, 
+            JWT_SECRET, 
+            { expiresIn: '1d' }
+        );
+
+        // 📡 ส่งเฉพาะ Token กลับไปให้หน้าบ้านเก็บลง Storage ตามที่คุณจิตร์จรัญต้องการ
         res.json({
             status: "success",
             message: "เข้าสู่ระบบสำเร็จ!",
-            user: {
-                user_id: user.user_id,
-                firstname: user.firstname,
-                lastname: user.lastname,
-                email: user.email,
-                phone: user.phone,
-                role: user.role,
-                age: user.age,
-                gender: user.gender,
-                symptoms: user.symptoms,
-                emergency_phone: user.emergency_phone,
-                doctor: user.doctor_id ? {
-                    name: user.doctor_name,
-                    specialty: user.doctor_specialty,
-                    hospital: user.hospital_name,
-                    phone: user.hospital_phone
-                } : null
+            token: token
+        });
+    });
+};
+
+// 🛠️ 2. พาร์ทใหม่ (Get Me): ใช้ Token ในการ Select ข้อมูลผู้ใช้งานกลับไป
+exports.getMe = (req, res) => {
+    // ดึง Token ออกมาจาก Header ของหน้าบ้านที่ส่งมา (Format: Bearer <token>)
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+        return res.status(401).json({ error: "ไม่พบ Token สำหรับยืนยันตัวตน" });
+    }
+
+    // ถอดรหัสลับตรวจสอบ Token
+    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+        if (err) {
+            return res.status(403).json({ error: "Token หมดอายุหรือไม่มีความถูกต้อง" });
+        }
+
+        // นำ user_id ที่แกะได้จาก Token วิ่งไป Select หาข้อมูลล่าสุดในตาราง user
+        const sql = `
+            SELECT user_id, firstname, lastname, email, phone, role, status, age, gender, symptoms, emergency_phone 
+            FROM user 
+            WHERE user_id = ?
+        `;
+        
+        db.query(sql, [decoded.user_id], (err, results) => {
+            if (err) {
+                return res.status(500).json({ error: "ดึงข้อมูลผู้ใช้ล้มเหลว", details: err.message });
             }
+            if (results.length === 0) {
+                return res.status(404).json({ error: "ไม่พบผู้ใช้งานรายนี้ในระบบ" });
+            }
+            
+            // ส่งข้อมูลผู้ใช้กลับไปให้หน้าบ้านใช้งานต่อ
+            res.json({
+                status: "success",
+                user: results[0]
+            });
         });
     });
 };

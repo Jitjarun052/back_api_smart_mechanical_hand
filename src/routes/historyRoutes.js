@@ -10,4 +10,7 @@ router.post('/save', historyController.saveHistory);   // ตรงกับ POS
 router.put('/:id', historyController.updateHistory);     // ตรงกับ PUT: /api/history/เลขID
 router.delete('/:id', historyController.deleteHistory);  // ตรงกับ DELETE: /api/history/เลขID
 
+// 🛠️ เพิ่มบรรทัดนี้: ทางดึงสถิติรายวันส่งออกไปให้หน้าจอ Recharts วาดกราฟ
+router.get('/daily-summary', historyController.getDailyTrainSummary);
+
 module.exports = router;

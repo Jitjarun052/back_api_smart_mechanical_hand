@@ -51,3 +51,31 @@ exports.getDoctorByCode = (req, res) => {
         res.json({ status: "success", doctor: results[0] });
     });
 };
+
+// src/controllers/doctorController.js
+
+exports.updateDoctorStatus = async (req, res) => {
+  const { id } = req.params; // รับ ID ของแพทย์จาก URL
+  const { doctor_status } = req.body; // รับค่าสถานะใหม่ (1 หรือ 0) ที่ส่งมาจาก React หน้าบ้าน
+
+  // เช็คความปลอดภัยของข้อมูลก่อนส่งเข้า SQL (ตรวจสอบว่าเป็นเลข 0 หรือ 1 เท่านั้น)
+  if (doctor_status !== 0 && doctor_status !== 1) {
+    return res.status(400).json({ message: 'ค่าสถานะไม่ถูกต้อง (ต้องเป็น 0 หรือ 1 เท่านั้น)' });
+  }
+
+  try {
+    const db = require('../config/db'); // ดึงตัวเชื่อมต่อฐานข้อมูลของคุณจิตร์จรัญมาใช้งาน
+    const query = 'UPDATE doctors SET doctor_status = ? WHERE id = ?';
+
+    db.query(query, [doctor_status, id], (err, result) => {
+      if (err) {
+        console.error('SQL Error:', err);
+        return res.status(500).json({ message: 'เกิดข้อผิดพลาดในคำสั่ง SQL ระหลังบ้าน' });
+      }
+      return res.status(200).json({ message: 'อัปเดตสิทธิ์การใช้งานของแพทย์เรียบร้อยแล้ว' });
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'เซิร์ฟเวอร์เกิดข้อผิดพลาดภายใน' });
+  }
+};

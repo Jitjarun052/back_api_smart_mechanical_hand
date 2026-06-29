@@ -1,25 +1,32 @@
 const db = require('../config/db');
 
-// 1. GET: ดึงรายการอุปกรณ์ทั้งหมด (หรือดึงแยกตาม user_id)
-// 1. GET: ดึงรายการอุปกรณ์ทั้งหมด (และรองรับการค้นหาเฉพาะเครื่องที่ถูกระงับ/Offline)
+// 1. GET: ดึงรายการอุปกรณ์ทั้งหมด + ทำ LEFT JOIN ดึงชื่อเจ้าของมาแสดงผลด้วย!
 exports.getAllDevices = (req, res) => {
-    const { user_id, device_status } = req.query; // รับค่าเงื่อนไขจากพาร์ท URL (เช่น ?device_status=0)
+    const { user_id, device_status } = req.query;
     
-    let sql = "SELECT * FROM device WHERE 1=1"; // ใช้ WHERE 1=1 เพื่อให้เราสามารถต่อคำสั่ง AND ได้ง่ายๆ
+    // 💥 ใช้ LEFT JOIN ดึงชื่อ (firstname) และนามสกุล (lastname) มารวมกันเป็น owner_name
+    let sql = `
+        SELECT d.device_id, d.device_name, d.serial_number, d.user_id, d.device_status,
+               CONCAT(u.firstname, ' ', u.lastname) AS owner_name
+        FROM device d
+        LEFT JOIN user u ON d.user_id = u.user_id
+        WHERE 1=1
+    `;
     let params = [];
     
-    // เงื่อนไขที่ 1: ถ้าส่งไอดีผู้ใช้มา ให้ค้นหาเฉพาะของคนนั้น
     if (user_id) {
-        sql += " AND user_id = ?";
+        sql += " AND d.user_id = ?";
         params.push(user_id);
     }
     
-    // เงื่อนไขที่ 2: ถ้าส่งสถานะมา (เช่น 0 หรือ 1) ให้คัดกรองตามสถานะนั้น
     if (device_status !== undefined) {
-        sql += " AND device_status = ?";
+        sql += " AND d.device_status = ?";
         params.push(device_status);
     }
     
+    // ดึงข้อมูลเรียงตามไอดีล่าสุดขึ้นก่อน
+    sql += " ORDER BY d.device_id DESC";
+
     db.query(sql, params, (err, results) => {
         if (err) {
             return res.status(500).json({ error: "ไม่สามารถดึงข้อมูลอุปกรณ์ได้", details: err.message });
@@ -28,15 +35,14 @@ exports.getAllDevices = (req, res) => {
     });
 };
 
-// 2. POST: ลงทะเบียนเพิ่มอุปกรณ์ชิ้นใหม่เข้าสู่ระบบ
+// 2. POST: ลงทะเบียนเพิ่มอุปกรณ์ชิ้นใหม่เข้าสู่ระบบ (คงเดิม)
 exports.createDevice = (req, res) => {
-    const { device_name, serial_number, user_id } = req.body; // อิงตามคอลัมน์จริง
+    const { device_name, serial_number, user_id } = req.body;
 
-    if (!device_name || !serial_number || !user_id) {
+    if (!device_name || !serial_number || user_id === undefined) {
         return res.status(400).json({ error: "กรุณากรอกข้อมูลอุปกรณ์ให้ครบถ้วน" });
     }
 
-    // กำหนดให้ตอนเพิ่มใหม่ device_status เป็น 0 (Offline) โดยอัตโนมัติ
     const sql = "INSERT INTO device (device_name, serial_number, user_id, device_status) VALUES (?, ?, ?, 0)";
 
     db.query(sql, [device_name, serial_number, user_id], (err, result) => {
@@ -51,13 +57,13 @@ exports.createDevice = (req, res) => {
     });
 };
 
-// 3. PUT: อัปเดตสถานะการเชื่อมต่อ IoT (Online/Offline)
+// 3. PUT: อัปเดตสลับสถานะการระงับสิทธิ์ / เปิดสิทธิ์การใช้งานตัวเครื่อง (0 = ปกติ, 1 = ระงับเครื่อง)
 exports.updateDeviceStatus = (req, res) => {
-    const { id } = req.params; // รับ device_id จาก URL
+    const { id } = req.params; // รับ device_id จากพาร์ท URL
     const { device_status } = req.body; // รับเลข 0 หรือ 1
 
-    if (device_status === undefined) {
-        return res.status(400).json({ error: "กรุณาระบุสถานะอุปกรณ์ (device_status)" });
+    if (device_status !== 0 && device_status !== 1) {
+        return res.status(400).json({ error: "กรุณาระบุสถานะอุปกรณ์ที่ถูกต้อง (0 หรือ 1)" });
     }
 
     const sql = "UPDATE device SET device_status = ? WHERE device_id = ?";
@@ -68,7 +74,7 @@ exports.updateDeviceStatus = (req, res) => {
         }
         res.json({ 
             status: "success", 
-            message: `อัปเดตสถานะอุปกรณ์ ID: ${id} เป็นเรียบร้อยแล้ว` 
+            message: `อัปเดตสเตตัสอุปกรณ์ ID: ${id} ในฐานข้อมูลเรียบร้อยแล้ว` 
         });
     });
 };
