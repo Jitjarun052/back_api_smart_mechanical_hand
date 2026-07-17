@@ -95,49 +95,124 @@ exports.register = async (req, res) => {
 };
 
 // 2. ระบบเข้าสู่ระบบ (Login) - เพิ่มการส่งคืนข้อมูลสุขภาพเพื่อไปแสดงบนหน้าจอ Patient Info
-exports.login = (req, res) => {
+// exports.login = (req, res) => {
+//     const { email, password } = req.body;
+
+//     const sql = `
+//         SELECT u.*, d.name AS doctor_name, d.specialty AS doctor_specialty, d.hospital_name, d.hospital_phone 
+//         FROM user u
+//         LEFT JOIN doctors d ON u.doctor_id = d.id
+//         WHERE u.email = ? AND u.password = ?
+//     `;
+    
+//     db.query(sql, [email, password], (err, results) => {
+//         if (err) {
+//             return res.status(500).json({ error: "เกิดข้อผิดพลาดในการตรวจสอบข้อมูล", details: err.message });
+//         }
+//         if (results.length === 0) {
+//             return res.status(401).json({ error: "อีเมลหรือรหัสผ่านไม่ถูกต้อง" });
+//         }
+
+//         const user = results[0];
+
+//         if (user.status === 1) {
+//             return res.status(403).json({ error: "บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
+//         }
+
+//         // 🔑 สร้าง Token โดยฝังข้อมูลสิทธิ์และไอดีไว้ข้างใน (มีอายุใช้งาน 1 วัน)
+//         const token = jwt.sign(
+//             { user_id: user.user_id, role: user.role }, 
+//             JWT_SECRET, 
+//             { expiresIn: '1d' }
+//         );
+
+//         // 📡 ส่งเฉพาะ Token กลับไปให้หน้าบ้านเก็บลง Storage ตามที่คุณจิตร์จรัญต้องการ
+//         res.json({
+//             status: "success",
+//             message: "เข้าสู่ระบบสำเร็จ!",
+//             token: token
+//         });
+//     });
+// };
+
+exports.login = async (req, res) => {
     const { email, password } = req.body;
 
-    const sql = `
-        SELECT u.*, d.name AS doctor_name, d.specialty AS doctor_specialty, d.hospital_name, d.hospital_phone 
-        FROM user u
-        LEFT JOIN doctors d ON u.doctor_id = d.id
-        WHERE u.email = ? AND u.password = ?
-    `;
-    
-    db.query(sql, [email, password], (err, results) => {
-        if (err) {
-            return res.status(500).json({ error: "เกิดข้อผิดพลาดในการตรวจสอบข้อมูล", details: err.message });
+    if (!email || !password) {
+        return res.status(400).json({ error: "กรุณากรอกอีเมลและรหัสผ่านให้ครบถ้วน" });
+    }
+
+    try {
+        // 🔍 ขั้นที่ 1: ค้นหาข้อมูลในตารางแพทย์ (doctors) ก่อน
+        const doctorSql = `SELECT * FROM doctors WHERE email = ? AND password = ?`;
+        const [doctorRows] = await db.promise().query(doctorSql, [email, password]);
+
+        if (doctorRows.length > 0) {
+            const doctor = doctorRows[0];
+
+            // ตรวจสอบสิทธิ์สถานะแพทย์ (1 = ถูกระงับสิทธิ์)
+            if (doctor.doctor_status === 1) {
+                return res.status(403).json({ error: "บัญชีแพทย์ของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
+            }
+
+            // 🔑 สร้าง Token โดยฝังข้อมูลสิทธิ์ของแพทย์ (role: 'doctor') และใช้ id ของตาราง doctors
+            const token = jwt.sign(
+                { id: doctor.id, role: 'doctor' }, 
+                JWT_SECRET, 
+                { expiresIn: '1d' }
+            );
+
+            return res.json({
+                status: "success",
+                message: "เข้าสู่ระบบในฐานะแพทย์สำเร็จ!",
+                token: token,
+                role: "doctor" // 🩺 ส่งสิทธิ์กลับไปให้ Flutter ใช้เช็คสลับหน้า
+            });
         }
-        if (results.length === 0) {
-            return res.status(401).json({ error: "อีเมลหรือรหัสผ่านไม่ถูกต้อง" });
+
+        // 🔍 ขั้นที่ 2: หากไม่พบข้อมูลในตารางแพทย์ ให้ข้ามมาหาในตารางผู้ป่วย (user) ต่อทันที
+        const userSql = `
+            SELECT u.*, d.name AS doctor_name, d.specialty AS doctor_specialty, d.hospital_name, d.hospital_phone 
+            FROM user u
+            LEFT JOIN doctors d ON u.doctor_id = d.id
+            WHERE u.email = ? AND u.password = ?
+        `;
+        const [userRows] = await db.promise().query(userSql, [email, password]);
+
+        if (userRows.length > 0) {
+            const user = userRows[0];
+
+            // ตรวจสอบสถานะโดนระงับของผู้ป่วย (1 = ถูกระงับสิทธิ์)
+            if (user.status === 1) {
+                return res.status(403).json({ error: "บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
+            }
+
+            // 🔑 สร้าง Token โดยฝังข้อมูลสิทธิ์ของผู้ป่วย (role: 'patient')
+            const token = jwt.sign(
+                { id: user.user_id, role: 'patient' }, 
+                JWT_SECRET, 
+                { expiresIn: '1d' }
+            );
+
+            return res.json({
+                status: "success",
+                message: "เข้าสู่ระบบในฐานะผู้ป่วยสำเร็จ!",
+                token: token,
+                role: "patient" // 🟠 ส่งสิทธิ์ผู้ป่วยกลับไป
+            });
         }
 
-        const user = results[0];
+        // 🔴 ขั้นที่ 3: ค้นหาทั้ง 2 ตารางแล้วไม่ตรงกับบัญชีไหนเลย
+        return res.status(401).json({ error: "อีเมลหรือรหัสผ่านไม่ถูกต้อง" });
 
-        if (user.status === 1) {
-            return res.status(403).json({ error: "บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
-        }
-
-        // 🔑 สร้าง Token โดยฝังข้อมูลสิทธิ์และไอดีไว้ข้างใน (มีอายุใช้งาน 1 วัน)
-        const token = jwt.sign(
-            { user_id: user.user_id, role: user.role }, 
-            JWT_SECRET, 
-            { expiresIn: '1d' }
-        );
-
-        // 📡 ส่งเฉพาะ Token กลับไปให้หน้าบ้านเก็บลง Storage ตามที่คุณจิตร์จรัญต้องการ
-        res.json({
-            status: "success",
-            message: "เข้าสู่ระบบสำเร็จ!",
-            token: token
-        });
-    });
+    } catch (err) {
+        console.error("Smart Login Error:", err);
+        return res.status(500).json({ error: "เกิดข้อผิดพลาดในการตรวจสอบข้อมูล", details: err.message });
+    }
 };
 
 // 🛠️ 2. พาร์ทใหม่ (Get Me): ใช้ Token ในการ Select ข้อมูลผู้ใช้งานกลับไป
 exports.getMe = (req, res) => {
-    // ดึง Token ออกมาจาก Header ของหน้าบ้านที่ส่งมา (Format: Bearer <token>)
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
 
@@ -145,33 +220,50 @@ exports.getMe = (req, res) => {
         return res.status(401).json({ error: "ไม่พบ Token สำหรับยืนยันตัวตน" });
     }
 
-    // ถอดรหัสลับตรวจสอบ Token
-    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
         if (err) {
             return res.status(403).json({ error: "Token หมดอายุหรือไม่มีความถูกต้อง" });
         }
 
-        // นำ user_id ที่แกะได้จาก Token วิ่งไป Select หาข้อมูลล่าสุดในตาราง user
-        const sql = `
-            SELECT user_id, firstname, lastname, email, phone, role, status, age, gender, symptoms, emergency_phone 
-            FROM user 
-            WHERE user_id = ?
-        `;
-        
-        db.query(sql, [decoded.user_id], (err, results) => {
-            if (err) {
-                return res.status(500).json({ error: "ดึงข้อมูลผู้ใช้ล้มเหลว", details: err.message });
-            }
-            if (results.length === 0) {
+        try {
+            // 🩺 กรณี Token เป็นสิทธิ์แพทย์
+            if (decoded.role === 'doctor') {
+                const [doctorRows] = await db.promise().query(
+                    "SELECT id, name, doctor_code, specialty, hospital_name, hospital_phone, doctor_status FROM doctors WHERE id = ?", 
+                    [decoded.id]
+                );
+                
+                if (doctorRows.length === 0) {
+                    return res.status(404).json({ error: "ไม่พบข้อมูลแพทย์ในระบบ" });
+                }
+
+                return res.json({
+                    status: "success",
+                    role: "doctor",
+                    user: doctorRows[0]
+                });
+            } 
+            
+            // 🟠 กรณี Token เป็นสิทธิ์ผู้ป่วย (patient)
+            const [userRows] = await db.promise().query(
+                "SELECT user_id, firstname, lastname, email, phone, role, status, age, gender, symptoms, emergency_phone FROM user WHERE user_id = ?", 
+                [decoded.id]
+            );
+
+            if (userRows.length === 0) {
                 return res.status(404).json({ error: "ไม่พบผู้ใช้งานรายนี้ในระบบ" });
             }
-            
-            // ส่งข้อมูลผู้ใช้กลับไปให้หน้าบ้านใช้งานต่อ
-            res.json({
+
+            return res.json({
                 status: "success",
-                user: results[0]
+                role: "patient",
+                user: userRows[0]
             });
-        });
+
+        } catch (err) {
+            console.error("GetMe Error:", err);
+            return res.status(500).json({ error: "ดึงข้อมูลระบบโปรไฟล์ล้มเหลว", details: err.message });
+        }
     });
 };
 
