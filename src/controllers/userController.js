@@ -79,8 +79,8 @@ exports.register = async (req, res) => {
 
         // [Logic D]: บันทึกอุปกรณ์ลงตาราง device
         if (serial_number && device_name) {
-            const insertDeviceSql = `INSERT INTO device (serial_number, device_name, user_id) VALUES (?, ?, ?)`;
-            await db.promise().query(insertDeviceSql, [serial_number, device_name, newUserId]);
+            const insertDeviceSql = `INSERT INTO device (serial_number, device_name, user_id ,device_status) VALUES (?, ?, ?, ?)`;
+            await db.promise().query(insertDeviceSql, [serial_number, device_name, newUserId, 0]);
         }
 
         return res.json({ 
@@ -143,66 +143,84 @@ exports.login = async (req, res) => {
     }
 
     try {
-        // 🔍 ขั้นที่ 1: ค้นหาข้อมูลในตารางแพทย์ (doctors) ก่อน
-        const doctorSql = `SELECT * FROM doctors WHERE email = ? AND password = ?`;
-        const [doctorRows] = await db.promise().query(doctorSql, [email, password]);
+        const connection = db.promise ? db.promise() : db;
 
-        if (doctorRows.length > 0) {
-            const doctor = doctorRows[0];
+        // 🔍 ขั้นที่ 1: ลองค้นหาในตาราง doctors ก่อน (ดักจับไว้ถ้าตารางแพทย์ไม่มีคอลัมน์ email)
+        try {
+            const doctorSql = `SELECT * FROM doctors WHERE email = ? AND password = ?`;
+            const [doctorRows] = await connection.query(doctorSql, [email, password]);
 
-            // ตรวจสอบสิทธิ์สถานะแพทย์ (1 = ถูกระงับสิทธิ์)
-            if (doctor.doctor_status === 1) {
-                return res.status(403).json({ error: "บัญชีแพทย์ของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
+            if (doctorRows.length > 0) {
+                const doctor = doctorRows[0];
+
+                if (doctor.doctor_status === 1) {
+                    return res.status(403).json({ error: "บัญชีแพทย์ของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
+                }
+
+                const token = jwt.sign(
+                    { id: doctor.id, role: 'doctor' }, 
+                    JWT_SECRET, 
+                    { expiresIn: '1d' }
+                );
+
+                return res.json({
+                    status: "success",
+                    message: "เข้าสู่ระบบในฐานะแพทย์สำเร็จ!",
+                    token: token,
+                    role: "doctor",
+                    user: {
+                        id: doctor.id,
+                        name: doctor.name,
+                        doctor_code: doctor.doctor_code
+                    }
+                });
             }
-
-            // 🔑 สร้าง Token โดยฝังข้อมูลสิทธิ์ของแพทย์ (role: 'doctor') และใช้ id ของตาราง doctors
-            const token = jwt.sign(
-                { id: doctor.id, role: 'doctor' }, 
-                JWT_SECRET, 
-                { expiresIn: '1d' }
-            );
-
-            return res.json({
-                status: "success",
-                message: "เข้าสู่ระบบในฐานะแพทย์สำเร็จ!",
-                token: token,
-                role: "doctor" // 🩺 ส่งสิทธิ์กลับไปให้ Flutter ใช้เช็คสลับหน้า
-            });
+        } catch (doctorQueryErr) {
+            // ถ้าตาราง doctors ไม่มี column email ให้ข้ามมาค้นหาในตาราง user ต่อได้เลยโดยไม่ล่ม
+            console.log("Doctors table query skipped:", doctorQueryErr.message);
         }
 
-        // 🔍 ขั้นที่ 2: หากไม่พบข้อมูลในตารางแพทย์ ให้ข้ามมาหาในตารางผู้ป่วย (user) ต่อทันที
+        // 🔍 ขั้นที่ 2: ค้นหาในตาราง user (ครอบคลุมทั้ง Admin role=1 และ Patient role=0)
         const userSql = `
             SELECT u.*, d.name AS doctor_name, d.specialty AS doctor_specialty, d.hospital_name, d.hospital_phone 
             FROM user u
             LEFT JOIN doctors d ON u.doctor_id = d.id
             WHERE u.email = ? AND u.password = ?
         `;
-        const [userRows] = await db.promise().query(userSql, [email, password]);
+        const [userRows] = await connection.query(userSql, [email, password]);
 
         if (userRows.length > 0) {
             const user = userRows[0];
 
-            // ตรวจสอบสถานะโดนระงับของผู้ป่วย (1 = ถูกระงับสิทธิ์)
             if (user.status === 1) {
                 return res.status(403).json({ error: "บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
             }
 
-            // 🔑 สร้าง Token โดยฝังข้อมูลสิทธิ์ของผู้ป่วย (role: 'patient')
+            // แยก role ให้ชัดเจน (ถ้า role=1 ให้เป็น admin/doctor, ถ้า role=0 ให้เป็น patient)
+            const userRole = user.role === 1 ? 'admin' : 'patient';
+
             const token = jwt.sign(
-                { id: user.user_id, role: 'patient' }, 
+                { id: user.user_id, role: userRole }, 
                 JWT_SECRET, 
                 { expiresIn: '1d' }
             );
 
             return res.json({
                 status: "success",
-                message: "เข้าสู่ระบบในฐานะผู้ป่วยสำเร็จ!",
+                message: "เข้าสู่ระบบสำเร็จ!",
                 token: token,
-                role: "patient" // 🟠 ส่งสิทธิ์ผู้ป่วยกลับไป
+                role: userRole,
+                user: {
+                    user_id: user.user_id,
+                    firstname: user.firstname,
+                    lastname: user.lastname,
+                    email: user.email,
+                    role: user.role
+                }
             });
         }
 
-        // 🔴 ขั้นที่ 3: ค้นหาทั้ง 2 ตารางแล้วไม่ตรงกับบัญชีไหนเลย
+        // 🔴 ขั้นที่ 3: ไม่ตรงกับบัญชีไหนเลย
         return res.status(401).json({ error: "อีเมลหรือรหัสผ่านไม่ถูกต้อง" });
 
     } catch (err) {
@@ -302,4 +320,55 @@ exports.updateStatus = (req, res) => {
             message: `เปลี่ยนสถานะผู้ใช้งาน ID: ${id} เป็นสถานะ ${status} เรียบร้อยแล้ว!` 
         });
     });
+};
+
+// 1. เช็กความถูกต้องของ Email + Phone
+exports.verifyIdentity = async (req, res) => {
+  const { email, phone } = req.body;
+
+  if (!email || !phone) {
+    return res.status(400).json({ error: "กรุณากรอกข้อมูลให้ครบถ้วน" });
+  }
+
+  try {
+    const [users] = await db.promise().query(
+      "SELECT user_id, firstname FROM user WHERE email = ? AND (phone = ? OR emergency_phone = ?)",
+      [email, phone, phone]
+    );
+
+    if (users.length === 0) {
+      return res.status(404).json({ error: "ไม่พบข้อมูลบัญชีที่ตรงกับอีเมลและเบอร์โทรนี้" });
+    }
+
+    return res.json({ 
+      status: "success", 
+      message: "ยืนยันตัวตนสำเร็จ",
+      userId: users[0].user_id,
+      firstname: users[0].firstname
+    });
+  } catch (err) {
+    console.error("Verify Identity Error:", err);
+    return res.status(500).json({ error: "เกิดข้อผิดพลาดภายในระบบ" });
+  }
+};
+
+// 2. อัปเดตรหัสผ่านใหม่
+exports.resetPassword = async (req, res) => {
+  const { userId, newPassword } = req.body;
+
+  if (!userId || !newPassword) {
+    return res.status(400).json({ error: "ข้อมูลไม่ครบถ้วน" });
+  }
+
+  try {
+    await db.promise().query(
+      "UPDATE user SET password = ? WHERE user_id = ?",
+      [newPassword, userId]
+    );
+
+    return res.json({ status: "success", message: "รีเซ็ตรหัสผ่านใหม่เรียบร้อยแล้ว!" });
+  } catch (err) {
+    console.error("Reset Password Error:", err);
+    return res.status(500).json({ error: "เกิดข้อผิดพลาดภายในระบบ" });
+  }
 };

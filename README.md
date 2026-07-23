@@ -162,3 +162,296 @@ historyController.js / historyRoutes.js: มีโครงสร้างไฟ
   * เพิ่มพาร์ทระบุตัวตนใหม่ `GET /api/user/me` เพื่อแกะและถอดรหัสตรวจสอบ Token[cite: 2] สำหรับดึงข้อมูลล่าสุดของผู้ใช้ปัจจุบัน และใช้ดักกรณี Token หมดอายุ (`expiresIn: 1d`)
 * **Dashboard API**: แยกโค้ดออกจากโครงสร้างเดิม สร้างไฟล์เราเตอร์ `dashboardRoutes.js` และคอนโทรลเลอร์ `dashboardController.js` เป็นสัดส่วนตามสถาปัตยกรรมที่ถูกต้อง
 * **SQL Queries Optimization**: ปรับปรุงชุดคำสั่ง `SELECT` ในคอนโทรลเลอร์ต่างๆ ให้ทำ `LEFT JOIN` ร่วมกับตารางอื่นเพื่อดึงข้อมูลข้ามตารางมาแสดงผลได้ครบถ้วน
+
+จัดเอกสารสรุปรายละเอียดการพัฒนาระบบ **Forgot Password (2-Step Verification)** ในรูปแบบ Markdown (`.md`) ให้เรียบร้อยครับสหาย! คุณสามารถก๊อปปี้ข้อความด้านล่างนี้ไปบันทึกเป็นไฟล์ `FORGOT_PASSWORD_DOCS.md` ในโปรเจกต์ได้เลยครับ 🚀📝✨
+
+---
+
+```markdown
+# 🔑 เอกสารพัฒนาระบบ Forgot Password (2-Step Verification)
+
+เอกสารสรุปโครงสร้างและการพัฒนาระบบกู้คืนรหัสผ่านสำหรับแอปพลิเคชันมือกลและแอปพลิเคชันเพื่อสุขภาพ (**Smart Mechanical Hand**) 
+
+---
+
+## 📌 ภาพรวมการทำงาน (Workflow)
+
+ระบบแบ่งออกเป็น **2 ขั้นตอนหลัก** เพื่อความปลอดภัยและการใช้งานที่ลื่นไหล (UX/UI):
+
+```text
+[Step 1: Verify Identity] 
+  └── กรอก Email + Phone ➔ ยิง API ตรวจสอบ
+        ├── ❌ ไม่พบข้อมูล: แสดง Modal แจ้งเตือน และให้กรอกใหม่
+        └── ✅ พบข้อมูล: แสดง Modal ยืนยันตัวตน (โชว์ชื่อผู้ใช้) ➔ กด "ยืนยัน" 
+              └── [Step 2: Reset Password]
+                    └── กรอกรหัสผ่านใหม่ + ยืนยัน ➔ บันทึกลง MySQL ➔ กลับหน้า SignIn
+
+```
+
+---
+
+## 📂 โครงสร้างไฟล์ในโปรเจกต์ (Project Structure)
+
+```text
+lib/
+├── widgets/
+│   └── forgot_password/
+│       ├── verify_identity_step.dart    # 📝 Component สเต็ปที่ 1 (กรอก Email & Phone)
+│       ├── reset_password_step.dart     # 📝 Component สเต็ปที่ 2 (กรอก รหัสผ่านใหม่)
+│       └── forgot_password_dialogs.dart # 🚨 Dialogs (ไม่พบข้อมูล / ยืนยันตัวตน / สำเร็จ)
+├── screens/
+│   ├── signin_screen.dart               # 🔑 หน้าเข้าสู่ระบบ (เพิ่มปุ่ม "ลืมรหัสผ่าน?")
+│   └── forgot_password_screen.dart      # 🏠 หน้าหลัก ควบคุม State & Logic ยิง API
+└── api/
+    └── auth_service.dart                # 🔌 ฟังก์ชันยิง API ไปยัง Backend
+
+```
+
+---
+
+## 🌐 1. Backend Endpoints (Express / Node.js)
+
+### 1.1 `POST /api/user/verify-identity`
+
+* **คำอธิบาย:** ตรวจสอบว่ามีผู้ใช้อยู่ในฐานข้อมูลหรือไม่
+* **Request Body:**
+```json
+{
+  "email": "somsri.newtest@gmail.com",
+  "phone": "0823456789"
+}
+
+```
+
+
+* **Response (200 OK):**
+```json
+{
+  "status": "success",
+  "message": "ยืนยันตัวตนสำเร็จ",
+  "userId": 12,
+  "firstname": "สมศรี"
+}
+
+```
+
+
+
+### 1.2 `POST /api/user/reset-password`
+
+* **คำอธิบาย:** อัปเดตรหัสผ่านใหม่ลงคอลัมน์ `password` ในตาราง `user`
+* **Request Body:**
+```json
+{
+  "userId": 12,
+  "newPassword": "newpassword123"
+}
+
+```
+
+
+* **Response (200 OK):**
+```json
+{
+  "status": "success",
+  "message": "รีเซ็ตรหัสผ่านใหม่เรียบร้อยแล้ว!"
+}
+
+```
+
+
+
+---
+
+## 🛠️ 2. โค้ดส่วนประกอบหลัก (Flutter Frontend)
+
+### 2.1 `lib/api/auth_service.dart`
+
+```dart
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+class AuthService {
+  static const String baseUrl = 'http://localhost:5000/api';
+
+  // 1. ยิงตรวจสอบตัวตนด้วย Email + Phone
+  static Future<Map<String, dynamic>> verifyIdentity({
+    required String email,
+    required String phone,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/user/verify-identity'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email, 'phone': phone}),
+      );
+
+      final data = jsonDecode(response.body);
+      if (response.statusCode == 200) {
+        return {
+          'success': true,
+          'userId': data['userId'],
+          'firstname': data['firstname'],
+        };
+      } else {
+        return {'success': false, 'message': data['error'] ?? 'ไม่พบข้อมูลในระบบ'};
+      }
+    } catch (e) {
+      return {'success': false, 'message': 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้: $e'};
+    }
+  }
+
+  // 2. ยิงอัปเดตรหัสผ่านใหม่
+  static Future<Map<String, dynamic>> resetPassword({
+    required int userId,
+    required String newPassword,
+  }) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$baseUrl/user/reset-password'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'userId': userId, 'newPassword': newPassword}),
+      );
+
+      final data = jsonDecode(response.body);
+      if (response.statusCode == 200) {
+        return {'success': true, 'message': data['message'] ?? 'รีเซ็ตสำเร็จ'};
+      } else {
+        return {'success': false, 'message': data['error'] ?? 'เกิดข้อผิดพลาด'};
+      }
+    } catch (e) {
+      return {'success': false, 'message': 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้: $e'};
+    }
+  }
+}
+
+```
+
+---
+
+### 2.2 `lib/widgets/forgot_password/forgot_password_dialogs.dart`
+
+```dart
+import 'package:flutter/material.dart';
+import '../../theme/app_theme.dart';
+
+class ForgotPasswordDialogs {
+  // 🚨 Modal กรณีไม่พบบัญชีในระบบ
+  static void showNotFoundDialog(BuildContext context, String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.error_outline_rounded, color: Colors.red),
+            SizedBox(width: 8),
+            Text('ไม่พบข้อมูล', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Text(message, style: const TextStyle(fontSize: 14, color: AppTheme.textPrimary)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('ตกลง', style: TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ✅ Modal ยืนยันชื่อผู้ใช้ก่อนไปหน้าสเต็ป 2
+  static void showConfirmIdentityDialog({
+    required BuildContext context,
+    required String userName,
+    required VoidCallback onConfirm,
+  }) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.verified_user_rounded, color: Colors.green),
+            SizedBox(width: 8),
+            Text('ยืนยันตัวตนสำเร็จ', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: Text(
+          'พบข้อมูลบัญชีของคุณ "$userName"\n\nคุณต้องการดำเนินการสร้างรหัสผ่านใหม่ใช่หรือไม่?',
+          style: const TextStyle(fontSize: 14, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('ยกเลิก', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppTheme.primaryColor,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              elevation: 0,
+            ),
+            onPressed: () {
+              Navigator.pop(context);
+              onConfirm();
+            },
+            child: const Text('ยืนยัน', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 🎉 Modal แสดงความยินดีเมื่อตั้งรหัสผ่านใหม่สำเร็จ
+  static void showSuccessDialog(BuildContext context, VoidCallback onSuccess) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.check_circle, color: Colors.green),
+            SizedBox(width: 8),
+            Text('สำเร็จ'),
+          ],
+        ),
+        content: const Text('ตั้งรหัสผ่านใหม่เรียบร้อยแล้ว กรุณาเข้าสู่ระบบอีกครั้งด้วยรหัสผ่านใหม่'),
+        actions: [
+          TextButton(
+            onPressed: onSuccess,
+            child: const Text('ตกลง', style: TextStyle(color: AppTheme.primaryColor, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+```
+
+---
+
+## 🎯 สรุปผลการทดสอบ (Testing Checkpoints)
+
+1. **กรณีใส่ Email / Phone ผิดหรือไม่มีในระบบ:**
+* [x] ต้องเด้ง Modal สีแดงว่า "ไม่พบข้อมูล"
+* [x] กด "ตกลง" แล้วปิด Dialog เพื่อให้ผู้ใช้แก้ไขข้อมูลในหน้าเดิมได้
+
+
+2. **กรณีใส่ Email / Phone ถูกต้อง:**
+* [x] ต้องเด้ง Modal สีเขียว "พบข้อมูลบัญชีของคุณ [ชื่อผู้ป่วย]"
+* [x] กด "ยืนยัน" แล้วสลับไปยังหน้า Step 2 (ตั้งรหัสผ่านใหม่)
+
+
+3. **กรณีตั้งรหัสผ่านใหม่เรียบร้อย:**
+* [x] บันทึกข้อมูลเข้า MySQL สำเร็จ
+* [x] เด้ง Modal สำเร็จ ➔ กด "ตกลง" แล้วเด้งกลับหน้า SignIn
+
+
+
+```
+
+```

@@ -10,5 +10,7 @@ router.put('/status/:id', userController.updateStatus); // ตรงกับ PU
 
 // 🛠️ พาร์ทแกะ Token เพื่อเช็คสิทธิ์ผู้ใช้ปัจจุบัน (ส่งคำขอผ่าน GET: /api/user/me)
 router.get('/me', userController.getMe);
+router.post('/verify-identity', userController.verifyIdentity);
+router.post('/reset-password', userController.resetPassword);
 
 module.exports = router;
