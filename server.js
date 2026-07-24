@@ -9,12 +9,14 @@ const path = require('path');
 app.use(cors());
 app.use(express.json());
 
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 // ดึงไฟล์เส้นทาง (Routes) ของระบบประวัติการฝึกเข้ามาใช้งาน
-const historyRoutes = require('./routes/historyRoutes');
-const userRoutes = require('./routes/userRoutes');
-const deviceRoutes = require('./routes/deviceRoutes');
-const doctorRouter = require('./routes/doctorRoutes');
-const dashboardController = require('./routes/dashboardRoutes');
+const historyRoutes = require('./src/routes/historyRoutes');
+const userRoutes = require('./src/routes/userRoutes');
+const deviceRoutes = require('./src/routes/deviceRoutes');
+const doctorRouter = require('./src/routes/doctorRoutes');
+const dashboardController = require('./src/routes/dashboardRoutes');
 
 // เปิดใช้งานพาร์ทเริ่มต้นเชื่อมไปหาชุดเส้นทางย่อย
 app.use('/api/history', historyRoutes);
@@ -22,7 +24,6 @@ app.use('/api/user', userRoutes);
 app.use('/api/device', deviceRoutes);
 app.use('/api/doctor', doctorRouter);
 app.use('/api/dashboard', dashboardController);
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Path ทดสอบหน้าแรกของเซิร์ฟเวอร์
 app.get('/api', (req, res) => {

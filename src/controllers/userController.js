@@ -263,8 +263,16 @@ exports.getMe = (req, res) => {
             } 
             
             // 🟠 กรณี Token เป็นสิทธิ์ผู้ป่วย (patient)
+            // ⚠️ [FIXED ✨]: เพิ่มคอลัมน์ `image` เข้าไปในคำสั่ง SELECT
             const [userRows] = await db.promise().query(
-                "SELECT user_id, firstname, lastname, email, phone, role, status, age, gender, symptoms, emergency_phone FROM user WHERE user_id = ?", 
+                `SELECT u.*, 
+                        d.name AS doctor_name, 
+                        d.specialty AS doctor_specialty, 
+                        d.hospital_name, 
+                        d.hospital_phone 
+                FROM user u 
+                LEFT JOIN doctors d ON u.doctor_id = d.id 
+                WHERE u.user_id = ?`, 
                 [decoded.id]
             );
 
@@ -275,7 +283,7 @@ exports.getMe = (req, res) => {
             return res.json({
                 status: "success",
                 role: "patient",
-                user: userRows[0]
+                user: userRows[0],
             });
 
         } catch (err) {
@@ -371,4 +379,46 @@ exports.resetPassword = async (req, res) => {
     console.error("Reset Password Error:", err);
     return res.status(500).json({ error: "เกิดข้อผิดพลาดภายในระบบ" });
   }
+};
+
+// 🛠️ 5. ระบบแก้ไขข้อมูลส่วนตัวผู้ป่วย (Update Profile)
+exports.updateProfile = async (req, res) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+        return res.status(401).json({ error: "ไม่พบ Token สำหรับยืนยันตัวตน" });
+    }
+
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+        if (err) {
+            return res.status(403).json({ error: "Token หมดอายุหรือไม่มีความถูกต้อง" });
+        }
+
+        const { firstname, lastname, age, gender, symptoms, emergency_phone, doctor_id } = req.body;
+
+        try {
+            // อัปเดตข้อมูลผู้ป่วยในตาราง user ตาม user_id ที่อยู่ใน Token
+            const updateSql = `
+                UPDATE user 
+                SET firstname = ?, lastname = ?, age = ?, gender = ?, symptoms = ?, emergency_phone = ?, doctor_id = ?
+                WHERE user_id = ?
+            `;
+
+            await db.promise().query(updateSql, [
+                firstname, lastname, age || null, gender || null, 
+                symptoms || null, emergency_phone || null, doctor_id || null, 
+                decoded.id
+            ]);
+
+            return res.json({
+                status: "success",
+                message: "อัปเดตข้อมูลส่วนตัวเรียบร้อยแล้ว!"
+            });
+
+        } catch (err) {
+            console.error("Update Profile Error:", err);
+            return res.status(500).json({ error: "เกิดข้อผิดพลาดในการอัปเดตข้อมูล", details: err.message });
+        }
+    });
 };

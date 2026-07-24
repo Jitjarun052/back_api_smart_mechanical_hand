@@ -78,3 +78,75 @@ exports.updateDeviceStatus = (req, res) => {
         });
     });
 };
+// 🛠️ 4. PUT: ปลดการผูกอุปกรณ์ (ตั้งค่า user_id เป็น NULL)
+exports.unbindDevice = (req, res) => {
+    const { device_id } = req.body;
+
+    if (!device_id) {
+        return res.status(400).json({ error: "กรุณาระบุ device_id ที่ต้องการยกเลิก" });
+    }
+
+    const sql = "UPDATE device SET user_id = NULL WHERE device_id = ?";
+
+    db.query(sql, [device_id], (err, result) => {
+        if (err) {
+            return res.status(500).json({ error: "ไม่สามารถยกเลิกการผูกอุปกรณ์ได้", details: err.message });
+        }
+        res.json({ 
+            status: "success", 
+            message: "ยกเลิกการผูกอุปกรณ์เรียบร้อยแล้ว" 
+        });
+    });
+};
+
+// 🛠️ 5. POST / PUT: เช็กและผูกอุปกรณ์ด้วย Serial Number
+exports.bindDeviceBySerial = (req, res) => {
+    const { serial_number, user_id, device_name } = req.body;
+
+    if (!serial_number || !user_id) {
+        return res.status(400).json({ error: "กรุณาระบุ Serial Number และ User ID" });
+    }
+
+    // 1. ค้นหาอุปกรณ์จาก Serial Number
+    const findSql = "SELECT * FROM device WHERE serial_number = ?";
+    db.query(findSql, [serial_number], (err, results) => {
+        if (err) {
+            return res.status(500).json({ error: "เกิดข้อผิดพลาดในการค้นหาอุปกรณ์", details: err.message });
+        }
+
+        // ❌ ไม่พบอุปกรณ์ในระบบ
+        if (results.length === 0) {
+            return res.status(444 || 404).json({ 
+                status: "not_found", 
+                message: "ไม่พบหมายเลขซีเรียลนัมเบอร์นี้ในระบบ กรุณาตรวจสอบอีกครั้ง" 
+            });
+        }
+
+        const device = results[0];
+
+        // ⚠️ อุปกรณ์ถูกผูกไว้กับคนอื่นแล้ว (user_id มีค่า และ ไม่ใช่ user_id ตัวเอง)
+        if (device.user_id && device.user_id !== user_id) {
+            return res.status(400).json({ 
+                status: "already_bound", 
+                message: "อุปกรณ์หมายเลขนี้ถูกลงทะเบียนโดยผู้ใช้งานอื่นแล้ว" 
+            });
+        }
+
+        // ✅ อุปกรณ์ว่างอยู่ -> อัปเดตผูก user_id เข้าไป
+        const updateSql = "UPDATE device SET user_id = ?, device_name = COALESCE(?, device_name) WHERE device_id = ?";
+        db.query(updateSql, [user_id, device_name || null, device.device_id], (updateErr) => {
+            if (updateErr) {
+                return res.status(500).json({ error: "ไม่สามารถผูกอุปกรณ์ได้", details: updateErr.message });
+            }
+            res.json({ 
+                status: "success", 
+                message: "ผูกอุปกรณ์สำเร็จเรียบร้อยแล้ว!",
+                device: {
+                    device_id: device.device_id,
+                    serial_number: device.serial_number,
+                    device_name: device_name || device.device_name
+                }
+            });
+        });
+    });
+};
