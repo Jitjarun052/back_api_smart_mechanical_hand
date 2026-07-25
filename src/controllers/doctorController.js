@@ -1,4 +1,6 @@
 const db = require('../config/db');
+const jwt = require('jsonwebtoken');
+const JWT_SECRET = 'YOUR_SUPER_SECRET_KEY_2026';
 
 // 1. เพิ่มข้อมูลแพทย์ใหม่เข้าสู่ระบบ
 exports.createDoctor = async (req, res) => {
@@ -78,4 +80,135 @@ exports.updateDoctorStatus = async (req, res) => {
     console.error(error);
     res.status(500).json({ message: 'เซิร์ฟเวอร์เกิดข้อผิดพลาดภายใน' });
   }
+};
+
+// 🛠️ 4. ดึงรายชื่อผู้ป่วยเฉพาะคนที่ผูกกับแพทย์คนนี้ (ดึงตาม doctor_id จาก Token หรือ Query)
+// 🛠️ 4. ดึงรายชื่อผู้ป่วยเฉพาะคนที่ผูกกับแพทย์คนนี้ (แก้ไข Query ให้ดึงชัวร์ 100%)
+exports.getMyPatients = async (req, res) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+        return res.status(401).json({ error: "ไม่พบ Token สำหรับยืนยันตัวตน" });
+    }
+
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+        if (err || decoded.role !== 'doctor') {
+            return res.status(403).json({ error: "สิทธิ์การใช้งานไม่ถูกต้อง" });
+        }
+
+        try {
+            // 💡 [ปรับ Query ใหม่]: ดึงจาก user เป็นหลัก แล้ว Subquery หาประวัติล่าสุด/ค่าเฉลี่ย
+            const sql = `
+                SELECT 
+                    u.user_id AS id,
+                    CONCAT(u.firstname, ' ', u.lastname) AS name,
+                    u.age,
+                    u.symptoms AS symptom,
+                    u.phone,
+                    u.image,
+                    (SELECT MAX(created_at) FROM history WHERE user_id = u.user_id) AS last_session_raw,
+                    (SELECT ROUND(AVG(accuracy), 0) FROM history WHERE user_id = u.user_id) AS avg_accuracy
+                FROM user u
+                WHERE u.doctor_id = ?
+                ORDER BY u.user_id DESC
+            `;
+
+            const [rows] = await db.promise().query(sql, [decoded.id]);
+            
+            console.log(`[Doctor ID: ${decoded.id}] Found Patients:`, rows.length); // 🔍 Log ดู ID หมอที่ล็อกอินเข้ามา
+
+            return res.json({ status: "success", patients: rows });
+
+        } catch (err) {
+            console.error("Get My Patients Error:", err);
+            return res.status(500).json({ error: "เกิดข้อผิดพลาดในการดึงข้อมูลผู้ป่วย", details: err.message });
+        }
+    });
+};
+
+// 🛠️ 5. ดึงประวัติฝึกภาพรวมของผู้ป่วยทุกคนในการดูแลของแพทย์คนนี้
+exports.getDoctorHistoryLogs = async (req, res) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) return res.status(401).json({ error: "ไม่พบ Token" });
+
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+        if (err || decoded.role !== 'doctor') {
+            return res.status(403).json({ error: "สิทธิ์ไม่ถูกต้อง" });
+        }
+
+        try {
+            const sql = `
+                SELECT 
+                    h.history_id,
+                    CONCAT(u.firstname, ' ', u.lastname) AS patient_name,
+                    h.count,
+                    h.accuracy,
+                    h.duration,
+                    h.max_force,
+                    h.created_at
+                FROM history h
+                JOIN user u ON h.user_id = u.user_id
+                WHERE u.doctor_id = ?
+                ORDER BY h.created_at DESC
+                LIMIT 30
+            `;
+
+            const [rows] = await db.promise().query(sql, [decoded.id]);
+            return res.json({ status: "success", logs: rows });
+
+        } catch (err) {
+            console.error("Get Doctor Logs Error:", err);
+            return res.status(500).json({ error: "เกิดข้อผิดพลาดในการดึงประวัติ", details: err.message });
+        }
+    });
+};
+
+// 🛠️ 6. อัปเดตข้อมูลโปรไฟล์ของแพทย์ผู้ใช้งานเอง
+exports.updateDoctorProfile = async (req, res) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+        return res.status(401).json({ error: "ไม่พบ Token สำหรับยืนยันตัวตน" });
+    }
+
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+        if (err || decoded.role !== 'doctor') {
+            return res.status(403).json({ error: "สิทธิ์การใช้งานไม่ถูกต้อง" });
+        }
+
+        const { name, hospital_name, doctor_code, email } = req.body;
+
+        if (!name || !hospital_name) {
+            return res.status(400).json({ error: "กรุณากรอกชื่อและโรงพยาบาล" });
+        }
+
+        try {
+            const sql = `
+                UPDATE doctors 
+                SET name = ?, hospital_name = ?, doctor_code = ?, email = ?
+                WHERE id = ?
+            `;
+
+            await db.promise().query(sql, [
+                name, 
+                hospital_name, 
+                doctor_code || null, 
+                email || null, 
+                decoded.id
+            ]);
+
+            return res.json({
+                status: "success",
+                message: "อัปเดตข้อมูลโปรไฟล์แพทย์เรียบร้อยแล้ว!"
+            });
+
+        } catch (err) {
+            console.error("Update Doctor Profile Error:", err);
+            return res.status(500).json({ error: "เกิดข้อผิดพลาดในการอัปเดตข้อมูลโปรไฟล์", details: err.message });
+        }
+    });
 };

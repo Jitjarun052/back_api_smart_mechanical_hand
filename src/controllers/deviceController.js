@@ -150,3 +150,4 @@ exports.bindDeviceBySerial = (req, res) => {
         });
     });
 };
+

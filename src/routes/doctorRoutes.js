@@ -7,4 +7,8 @@ router.get('/', doctorController.getAllDoctors);          // GET: /api/doctor (�
 router.put('/status/:id', doctorController.updateDoctorStatus); // PUT: /api/doctor/status/เลขID
 router.get('/find/:code', doctorController.getDoctorByCode); // GET: /api/doctor/find/รหัสแพทย์ (ค้นหาแพทย์จากรหัส)
 
+router.get('/my-patients', doctorController.getMyPatients);
+router.get('/history-logs', doctorController.getDoctorHistoryLogs);
+router.put('/update-profile', doctorController.updateDoctorProfile);
+
 module.exports = router;

@@ -92,3 +92,138 @@ exports.getDailyTrainSummary = (req, res) => {
         res.json(results);
     });
 };
+
+// 🩺 ดึงประวัติฝึกซ้อมเฉพาะผู้ป่วยรายบุคคล (สำหรับแพทย์/ผู้ป่วยส่องรายละเอียด)
+exports.getHistoryByUserId = async (req, res) => {
+    const { userId } = req.params;
+
+    try {
+        const sql = `
+            SELECT history_id, user_id, device_id, count, accuracy, max_force, duration, speed, wrist_angle, 
+                   finger_thumb, finger_index, finger_middle, finger_ring, finger_pinky, created_at
+            FROM history
+            WHERE user_id = ?
+            ORDER BY created_at ASC
+        `;
+
+        const [rows] = await db.promise().query(sql, [userId]);
+        return res.json({ status: "success", history: rows });
+
+    } catch (err) {
+        console.error("Get History By UserId Error:", err);
+        return res.status(500).json({ error: "ไม่สามารถดึงประวัติการฝึกซ้อมได้", details: err.message });
+    }
+};
+
+// ✅ เพิ่มการรับค่า 5 นิ้ว และใส่ค่าสำรองเป็น 0 เพื่อไม่ให้กระทบเคสที่ส่งมาไม่ครบ
+exports.createHistory = async (req, res) => {
+    const { 
+        user_id, device_id, count, accuracy, max_force, 
+        duration, speed, wrist_angle,
+        finger_thumb, finger_index, finger_middle, finger_ring, finger_pinky 
+    } = req.body;
+
+    if (!user_id) {
+        return res.status(400).json({ error: "กรุณาระบุ user_id" });
+    }
+
+    try {
+        const sql = `
+            INSERT INTO history (
+                user_id, device_id, count, accuracy, max_force, 
+                duration, speed, wrist_angle, 
+                finger_thumb, finger_index, finger_middle, finger_ring, finger_pinky
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `;
+
+        await db.promise().query(sql, [
+            user_id, 
+            device_id || 1, 
+            count || 0, 
+            accuracy || 0, 
+            max_force || 0,
+            duration || 0, 
+            speed || 0, 
+            wrist_angle || 0,
+            finger_thumb || 0, 
+            finger_index || 0, 
+            finger_middle || 0, 
+            finger_ring || 0, 
+            finger_pinky || 0
+        ]);
+
+        return res.json({ 
+            status: "success", 
+            message: "บันทึกประวัติการฝึกซ้อมพร้อมสถิติ 5 นิ้วเรียบร้อยแล้ว!" 
+        });
+
+    } catch (err) {
+        console.error("Create History Error:", err);
+        return res.status(500).json({ error: "บันทึกข้อมูลไม่สำเร็จ", details: err.message });
+    }
+};
+
+// 🩺 [เพิ่มใหม่]: สำหรับหน้าจอด็อกเตอร์ ไว้ดึงพัฒนาการแยกรายนิ้วของคนไข้เฉพาะคน
+exports.getPatientFingerDetail = async (req, res) => {
+    const { userId } = req.params;
+
+    try {
+        const sql = `
+            SELECT 
+                history_id, count, accuracy, max_force, duration, wrist_angle,
+                finger_thumb, finger_index, finger_middle, finger_ring, finger_pinky,
+                created_at
+            FROM history 
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+        `;
+        const [rows] = await db.promise().query(sql, [userId]);
+        return res.json({ status: "success", history: rows });
+    } catch (err) {
+        console.error("Get Finger Detail Error:", err);
+        return res.status(500).json({ error: "ดึงข้อมูลประวัติรายนิ้วล้มเหลว", details: err.message });
+    }
+};
+
+exports.createHistoryFromIoT = async (req, res) => {
+    const { 
+        serial_number, user_id, count, accuracy, max_force, 
+        duration, speed, wrist_angle,
+        finger_thumb, finger_index, finger_middle, finger_ring, finger_pinky 
+    } = req.body;
+
+    try {
+        // 1. นำ serial_number ที่ส่งมาจาก ESP32 ไปหา device_id ในตาราง devices
+        const [deviceRows] = await db.promise().query(
+            'SELECT device_id FROM devices WHERE serial_number = ?', 
+            [serial_number]
+        );
+
+        if (deviceRows.length === 0) {
+            return res.status(404).json({ error: "ไม่พบ Serial Number ของอุปกรณ์นี้ในระบบ!" });
+        }
+
+        const device_id = deviceRows[0].device_id;
+
+        // 2. บันทึกลงตาราง history พร้อม device_id ที่ถูกต้อง
+        const sql = `
+            INSERT INTO history (
+                user_id, device_id, count, accuracy, max_force, 
+                duration, speed, wrist_angle, 
+                finger_thumb, finger_index, finger_middle, finger_ring, finger_pinky
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `;
+
+        await db.promise().query(sql, [
+            user_id, device_id, count || 0, accuracy || 0, max_force || 0,
+            duration || 0, speed || 0, wrist_angle || 0,
+            finger_thumb || 0, finger_index || 0, finger_middle || 0, finger_ring || 0, finger_pinky || 0
+        ]);
+
+        return res.json({ status: "success", message: "บันทึกข้อมูลเรียบร้อย!" });
+
+    } catch (err) {
+        console.error("Save History Error:", err);
+        return res.status(500).json({ error: "Server Error", details: err.message });
+    }
+};

@@ -13,4 +13,9 @@ router.delete('/:id', historyController.deleteHistory);  // ตรงกับ D
 // 🛠️ เพิ่มบรรทัดนี้: ทางดึงสถิติรายวันส่งออกไปให้หน้าจอ Recharts วาดกราฟ
 router.get('/daily-summary', historyController.getDailyTrainSummary);
 
+router.get('/user/:userId', historyController.getHistoryByUserId);
+router.get('/patient-detail/:userId', historyController.getPatientFingerDetail);
+
+router.post('/iot', historyController.createHistoryFromIoT);
+
 module.exports = router;
