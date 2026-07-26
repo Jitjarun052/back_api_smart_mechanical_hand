@@ -103,11 +103,13 @@ exports.getHistoryByUserId = async (req, res) => {
                    finger_thumb, finger_index, finger_middle, finger_ring, finger_pinky, created_at
             FROM history
             WHERE user_id = ?
-            ORDER BY created_at ASC
+            ORDER BY created_at DESC   -- 🟢 เปลี่ยนจาก ASC เป็น DESC เพื่อเอาเซสชันล่าสุดมาอยู่แถวแรกสุด (Index 0)
         `;
 
         const [rows] = await db.promise().query(sql, [userId]);
-        return res.json({ status: "success", history: rows });
+        
+        // 🟢 ส่งเป็น Array `rows` กลับไปตรงๆ หรือถ้า Flutter รับ { history: rows } ให้คงไว้ตามโครงสร้างเดิม
+        return res.json(rows); 
 
     } catch (err) {
         console.error("Get History By UserId Error:", err);
@@ -128,6 +130,7 @@ exports.createHistory = async (req, res) => {
     }
 
     try {
+        // 1. บันทึกสถิติลงตาราง history ตามโค้ดเดิมของคุณ
         const sql = `
             INSERT INTO history (
                 user_id, device_id, count, accuracy, max_force, 
@@ -152,6 +155,42 @@ exports.createHistory = async (req, res) => {
             finger_pinky || 0
         ]);
 
+        // 2. ⚡ [แทรกใหม่] ออโต้สร้าง Notification แจ้งเตือนเมื่อปลดล็อกความสำเร็จ
+        try {
+            // ดึงจำนวนวันที่เคยฝึกซ้อมทั้งหมดแบบไม่นับวันซ้ำ
+            const [historyRows] = await db.promise().query(
+                'SELECT DISTINCT DATE(created_at) as train_date FROM history WHERE user_id = ?',
+                [user_id]
+            );
+
+            const totalDays = historyRows.length;
+
+            // ตรวจเช็กเป้าหมาย เช่น ครบ 3 วัน, 5 วัน, 10 วัน หรือ 30 วัน
+            if ([3, 5, 10, 15, 30].includes(totalDays)) {
+                // เช็กซ้ำก่อนว่าเคยยิงแจ้งเตือนความสำเร็จของวันนั้นๆ ไปหรือยัง (ป้องกันแจ้งเตือนซ้ำในวันเดียวกัน)
+                const [existNoti] = await db.promise().query(
+                    'SELECT notification_id FROM notifications WHERE user_id = ? AND subtitle LIKE ?',
+                    [user_id, `%ครบ ${totalDays} วัน%`]
+                );
+
+                if (existNoti.length === 0) {
+                    await db.promise().query(
+                        'INSERT INTO notifications (user_id, title, subtitle, type) VALUES (?, ?, ?, ?)',
+                        [
+                            user_id,
+                            'ความสำเร็จใหม่! 🏆',
+                            `ยินดีด้วย! คุณทำสถิติฝึกซ้อมสะสมครบ ${totalDays} วันเรียบร้อยแล้ว`,
+                            'achievement'
+                        ]
+                    );
+                }
+            }
+        } catch (notiErr) {
+            // ซ่อน/Log Error ฝั่ง Notification ไว้ เพื่อไม่ให้กระทบกระบวนการหลักของการบันทึก History
+            console.error("Auto Notification Error (Non-blocking):", notiErr);
+        }
+
+        // 3. คืนค่า JSON สเปกเดิมที่คุณทำไว้ หน้าบ้าน Flutter รับค่าได้ปกติ 100%
         return res.json({ 
             status: "success", 
             message: "บันทึกประวัติการฝึกซ้อมพร้อมสถิติ 5 นิ้วเรียบร้อยแล้ว!" 
@@ -195,7 +234,7 @@ exports.createHistoryFromIoT = async (req, res) => {
     try {
         // 1. นำ serial_number ที่ส่งมาจาก ESP32 ไปหา device_id ในตาราง devices
         const [deviceRows] = await db.promise().query(
-            'SELECT device_id FROM devices WHERE serial_number = ?', 
+            'SELECT device_id FROM device WHERE serial_number = ?', 
             [serial_number]
         );
 

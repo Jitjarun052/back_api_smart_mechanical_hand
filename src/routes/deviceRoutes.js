@@ -12,4 +12,10 @@ router.put('/unbind', deviceController.unbindDevice);
 // เพิ่ม Route สำหรับผูกอุปกรณ์ผ่าน Serial Number
 router.post('/bind', deviceController.bindDeviceBySerial);
 
+// 🟢 เพิ่ม 2 บรรทัดนี้ต่อท้ายใน deviceRoutes.js
+router.get('/status/:id', deviceController.getDeviceStatus); // ตรงกับ GET: /api/device/status/1
+router.post('/control/:id', deviceController.controlDevice);  // ตรงกับ POST: /api/device/control/1
+
+router.put('/live-count/:id', deviceController.updateLiveCount);
+
 module.exports = router;

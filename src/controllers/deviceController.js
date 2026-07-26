@@ -151,3 +151,75 @@ exports.bindDeviceBySerial = (req, res) => {
     });
 };
 
+// 6. GET: ให้ ESP32 และ Flutter App มาเช็กสถานะการทำงาน/คำสั่งสั่งฝึก (START/STOP)
+exports.getDeviceStatus = async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        // ดึงค่า status / is_training จากตาราง device
+        const [rows] = await db.promise().query(
+            "SELECT device_id, device_name, user_id, device_status, is_training, live_count FROM device WHERE device_id = ?", 
+            [id]
+        );
+
+        if (rows.length === 0) {
+            return res.status(404).json({ error: "ไม่พบอุปกรณ์หมายเลขนี้ในระบบ" });
+        }
+
+        const dev = rows[0];
+        return res.json({
+            status: "success",
+            device_id: dev.device_id,
+            device_name: dev.device_name,
+            is_training: dev.is_training == 1, // คืนค่า true/false ให้ ESP32
+            live_count: dev.live_count || 0
+        });
+
+    } catch (err) {
+        console.error("Get Device Status Error:", err);
+        return res.status(500).json({ error: "เกิดข้อผิดพลาดในการอ่านสถานะอุปกรณ์", details: err.message });
+    }
+};
+
+// 7. POST: ให้ Flutter App ยิงส่งคำสั่งควบคุม (START / STOP) ลง DB
+exports.controlDevice = async (req, res) => {
+    const { id } = req.params;
+    const { command } = req.body; // รับคำสั่ง 'START' หรือ 'STOP'
+
+    if (!command) {
+        return res.status(400).json({ error: "กรุณาระบุคำสั่ง command (START หรือ STOP)" });
+    }
+
+    const isTraining = (command.toUpperCase() === 'START') ? 1 : 0;
+
+    try {
+        const sql = "UPDATE device SET is_training = ? WHERE device_id = ?";
+        await db.promise().query(sql, [isTraining, id]);
+
+        console.log(`📡 [IoT Control] อุปกรณ์ ID: ${id} เปลี่ยนสถานะเป็น ${command}`);
+        return res.json({
+            status: "success",
+            message: `ส่งคำสั่ง ${command} ไปยังอุปกรณ์เรียบร้อยแล้ว`,
+            is_training: isTraining == 1
+        });
+
+    } catch (err) {
+        console.error("Control Device Error:", err);
+        return res.status(500).json({ error: "ส่งคำสั่งควบคุมไม่สำเร็จ", details: err.message });
+    }
+};
+// PUT: อัปเดต live_count เรียลไทม์จาก ESP32
+exports.updateLiveCount = async (req, res) => {
+    const { id } = req.params;
+    const { live_count } = req.body;
+
+    console.log(`📡 [Real-time Live Count] อุปกรณ์ ID: ${id} -> live_count: ${live_count}`);
+    
+    try {
+        await db.promise().query("UPDATE device SET live_count = ? WHERE device_id = ?", [live_count, id]);
+        return res.json({ status: "success", live_count });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+};
+
