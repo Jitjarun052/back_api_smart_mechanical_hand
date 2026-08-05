@@ -18,4 +18,7 @@ router.post('/control/:id', deviceController.controlDevice);  // ตรงกั
 
 router.put('/live-count/:id', deviceController.updateLiveCount);
 
+// Route ให้ ESP32 ยิง HTTP PUT มาอัปเดตสถานะ
+router.put('/training-status/:id', deviceController.updateTrainingStatusFromIoT);
+
 module.exports = router;

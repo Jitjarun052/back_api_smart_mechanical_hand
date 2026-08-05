@@ -29,7 +29,14 @@ exports.createDoctor = async (req, res) => {
 
 // 2. ดึงข้อมูลแพทย์ทั้งหมด (สำหรับ Admin หรือแสดงผลใน Dropdown หน้าบ้าน)
 exports.getAllDoctors = (req, res) => {
-    const sql = "SELECT * FROM doctors ORDER BY created_at DESC";
+    const sql = `
+        SELECT d.id, d.doctor_code, d.name, d.specialty, d.hospital_name, d.hospital_phone, d.doctor_status,
+            COUNT(u.user_id) AS patient_count
+        FROM doctors d
+        LEFT JOIN user u ON d.id = u.doctor_id
+        GROUP BY d.id
+        ORDER BY d.id DESC
+    `;
     db.query(sql, (err, results) => {
         if (err) {
             return res.status(500).json({ error: "ไม่สามารถดึงข้อมูลแพทย์ได้", details: err.message });

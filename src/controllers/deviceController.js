@@ -1,38 +1,51 @@
 const db = require('../config/db');
 
 // 1. GET: ดึงรายการอุปกรณ์ทั้งหมด + ทำ LEFT JOIN ดึงชื่อเจ้าของมาแสดงผลด้วย!
-exports.getAllDevices = (req, res) => {
+exports.getAllDevices = async (req, res) => {
     const { user_id, device_status } = req.query;
     
-    // 💥 ใช้ LEFT JOIN ดึงชื่อ (firstname) และนามสกุล (lastname) มารวมกันเป็น owner_name
-    let sql = `
-        SELECT d.device_id, d.device_name, d.serial_number, d.user_id, d.device_status,
-               CONCAT(u.firstname, ' ', u.lastname) AS owner_name
-        FROM device d
-        LEFT JOIN user u ON d.user_id = u.user_id
-        WHERE 1=1
-    `;
-    let params = [];
-    
-    if (user_id) {
-        sql += " AND d.user_id = ?";
-        params.push(user_id);
-    }
-    
-    if (device_status !== undefined) {
-        sql += " AND d.device_status = ?";
-        params.push(device_status);
-    }
-    
-    // ดึงข้อมูลเรียงตามไอดีล่าสุดขึ้นก่อน
-    sql += " ORDER BY d.device_id DESC";
-
-    db.query(sql, params, (err, results) => {
-        if (err) {
-            return res.status(500).json({ error: "ไม่สามารถดึงข้อมูลอุปกรณ์ได้", details: err.message });
+    try {
+        let sql = `
+            SELECT 
+                d.device_id, 
+                d.device_name, 
+                d.device_image,  -- 🟢 เพิ่มคอลัมน์รูปตรงนี้ครับ
+                d.serial_number, 
+                d.user_id, 
+                d.device_status,
+                d.is_training,
+                d.live_count,
+                IFNULL(CONCAT(u.firstname, ' ', u.lastname), 'ยังไม่มีผู้ถือครอง') AS owner_name
+            FROM device d
+            LEFT JOIN user u ON d.user_id = u.user_id
+            WHERE 1=1
+        `;
+        let params = [];
+        
+        if (user_id) {
+            sql += " AND d.user_id = ?";
+            params.push(user_id);
         }
-        res.json(results);
-    });
+        
+        if (device_status !== undefined) {
+            sql += " AND d.device_status = ?";
+            params.push(device_status);
+        }
+        
+        sql += " ORDER BY d.device_id DESC";
+
+        const connection = db.promise ? db.promise() : db;
+        const [results] = await connection.query(sql, params);
+
+        return res.json(results);
+
+    } catch (err) {
+        console.error("❌ Get All Devices Error:", err);
+        return res.status(500).json({ 
+            error: "ไม่สามารถดึงข้อมูลอุปกรณ์ได้", 
+            details: err.message 
+        });
+    }
 };
 
 // 2. POST: ลงทะเบียนเพิ่มอุปกรณ์ชิ้นใหม่เข้าสู่ระบบ (คงเดิม)
@@ -171,7 +184,7 @@ exports.getDeviceStatus = async (req, res) => {
             status: "success",
             device_id: dev.device_id,
             device_name: dev.device_name,
-            is_training: dev.is_training == 1, // คืนค่า true/false ให้ ESP32
+            training_status: String(dev.is_training), // คืนค่า true/false ให้ ESP32
             live_count: dev.live_count || 0
         });
 
@@ -184,30 +197,30 @@ exports.getDeviceStatus = async (req, res) => {
 // 7. POST: ให้ Flutter App ยิงส่งคำสั่งควบคุม (START / STOP) ลง DB
 exports.controlDevice = async (req, res) => {
     const { id } = req.params;
-    const { command } = req.body; // รับคำสั่ง 'START' หรือ 'STOP'
+    const { command } = req.body; // รับ "START-APP" หรือ "STOP-APP"
 
     if (!command) {
-        return res.status(400).json({ error: "กรุณาระบุคำสั่ง command (START หรือ STOP)" });
+        return res.status(400).json({ error: "กรุณาระบุ command" });
     }
-
-    const isTraining = (command.toUpperCase() === 'START') ? 1 : 0;
 
     try {
-        const sql = "UPDATE device SET is_training = ? WHERE device_id = ?";
-        await db.promise().query(sql, [isTraining, id]);
+        if (command === 'START-APP') {
+            await db.promise().query("UPDATE device SET is_training = 'START-APP', live_count = 0 WHERE device_id = ?", [id]);
+        } else if (command === 'PAUSE-APP') {
+            
+            await db.promise().query("UPDATE device SET is_training = 'PAUSE-APP' WHERE device_id = ?", [id]);
+        } else {
+            await db.promise().query("UPDATE device SET is_training = 'STOP-APP' WHERE device_id = ?", [id]);
+        }
 
-        console.log(`📡 [IoT Control] อุปกรณ์ ID: ${id} เปลี่ยนสถานะเป็น ${command}`);
-        return res.json({
-            status: "success",
-            message: `ส่งคำสั่ง ${command} ไปยังอุปกรณ์เรียบร้อยแล้ว`,
-            is_training: isTraining == 1
-        });
+        console.log(`📡 [App Control] ID: ${id} -> ${command}`);
+        return res.json({ status: "success", training_status: command });
 
     } catch (err) {
-        console.error("Control Device Error:", err);
-        return res.status(500).json({ error: "ส่งคำสั่งควบคุมไม่สำเร็จ", details: err.message });
+        return res.status(500).json({ error: err.message });
     }
 };
+
 // PUT: อัปเดต live_count เรียลไทม์จาก ESP32
 exports.updateLiveCount = async (req, res) => {
     const { id } = req.params;
@@ -218,6 +231,27 @@ exports.updateLiveCount = async (req, res) => {
     try {
         await db.promise().query("UPDATE device SET live_count = ? WHERE device_id = ?", [live_count, id]);
         return res.json({ status: "success", live_count });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+};
+
+// 🛠️ 9. PUT: ให้ ESP32 ยิงอัปเดตสถานะการฝึกซ้อม (is_training) โดยตรงเมื่อเปิด/ปิดจากภายนอก
+exports.updateTrainingStatusFromIoT = async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body; // รับ "START-IOT" หรือ "STOP-IOT"
+
+    try {
+        if (status === 'START-IOT') {
+            await db.promise().query("UPDATE device SET is_training = 'START-IOT', live_count = 0 WHERE device_id = ?", [id]);
+        } 
+        else {
+            await db.promise().query("UPDATE device SET is_training = 'STOP-IOT' WHERE device_id = ?", [id]);
+        }
+
+        console.log(`⚡ [IoT Status] ID: ${id} -> ${status}`);
+        return res.json({ status: "success", training_status: status });
+
     } catch (err) {
         return res.status(500).json({ error: err.message });
     }

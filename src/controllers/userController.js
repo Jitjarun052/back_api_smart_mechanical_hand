@@ -29,6 +29,44 @@ const upload = multer({ storage: storage, fileFilter: fileFilter });
 
 exports.upload = upload;
 
+// 🛠️ ดึงข้อมูลผู้ป่วยรายคนตาม user_id
+exports.getUserById = async (req, res) => {
+    const { id } = req.params;
+
+    // 🛡️ 1. ดักจับถ้า id ที่ส่งมาเป็น undefined, null หรือไม่ใช่ตัวเลข
+    if (!id || id === 'undefined' || id === 'null' || isNaN(id)) {
+        console.log(`⚠️ GetUserById Error: Invalid ID received -> "${id}"`);
+        return res.status(400).json({ error: "ระบุ ID ผู้ใช้งานไม่ถูกต้อง" });
+    }
+
+    try {
+        // 🟢 2. ดึงข้อมูลผู้ใช้ พร้อม Join ชื่อแพทย์ผู้ดูแล และคอลัมน์ image
+        const sql = `
+            SELECT 
+                u.user_id, u.firstname, u.lastname, u.email, u.phone, 
+                u.age, u.gender, u.symptoms, u.emergency_phone, u.status, u.image, u.doctor_id,
+                IFNULL(CONCAT(d.name, ' (', d.specialty, ')'), 'ยังไม่มีแพทย์ผู้ดูแล') AS doctor_name,
+                d.hospital_name
+            FROM user u
+            LEFT JOIN doctors d ON u.doctor_id = d.id
+            WHERE u.user_id = ?
+        `;
+        
+        const connection = db.promise ? db.promise() : db;
+        const [rows] = await connection.query(sql, [id]);
+
+        if (rows.length === 0) {
+            console.log(`❌ GetUserById: Not found user_id = ${id} in database`);
+            return res.status(404).json({ error: "ไม่พบข้อมูลผู้ใช้งานรายนี้" });
+        }
+
+        return res.json(rows[0]);
+    } catch (err) {
+        console.error("GetUserById Error:", err);
+        return res.status(500).json({ error: "เกิดข้อผิดพลาดในการดึงข้อมูลผู้ใช้", details: err.message });
+    }
+};
+
 // ==========================================
 
 // 2. ระบบสมัครสมาชิก (Register) เวอร์ชันรองรับรูปภาพ
@@ -135,6 +173,7 @@ exports.register = async (req, res) => {
 //     });
 // };
 
+// 🟢 1. ระบบ Login (เช็กแยกตารางแพทย์ และ ตาราง user ชัดเจน)[cite: 22]
 exports.login = async (req, res) => {
     const { email, password } = req.body;
 
@@ -145,7 +184,7 @@ exports.login = async (req, res) => {
     try {
         const connection = db.promise ? db.promise() : db;
 
-        // 🔍 ขั้นที่ 1: ลองค้นหาในตาราง doctors ก่อน (ดักจับไว้ถ้าตารางแพทย์ไม่มีคอลัมน์ email)
+        // 🔍 ขั้นที่ 1: ลองค้นหาในตาราง doctors ก่อน[cite: 22]
         try {
             const doctorSql = `SELECT * FROM doctors WHERE email = ? AND password = ?`;
             const [doctorRows] = await connection.query(doctorSql, [email, password]);
@@ -157,6 +196,7 @@ exports.login = async (req, res) => {
                     return res.status(403).json({ error: "บัญชีแพทย์ของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
                 }
 
+                // 🔑 สร้าง Token สำหรับแพทย์โดยเฉพาะ
                 const token = jwt.sign(
                     { id: doctor.id, role: 'doctor' }, 
                     JWT_SECRET, 
@@ -176,11 +216,10 @@ exports.login = async (req, res) => {
                 });
             }
         } catch (doctorQueryErr) {
-            // ถ้าตาราง doctors ไม่มี column email ให้ข้ามมาค้นหาในตาราง user ต่อได้เลยโดยไม่ล่ม
             console.log("Doctors table query skipped:", doctorQueryErr.message);
         }
 
-        // 🔍 ขั้นที่ 2: ค้นหาในตาราง user (ครอบคลุมทั้ง Admin role=1 และ Patient role=0)
+        // 🔍 ขั้นที่ 2: ค้นหาในตาราง user (role 0 = user, role 1 = admin)[cite: 22]
         const userSql = `
             SELECT u.*, d.name AS doctor_name, d.specialty AS doctor_specialty, d.hospital_name, d.hospital_phone 
             FROM user u
@@ -196,11 +235,12 @@ exports.login = async (req, res) => {
                 return res.status(403).json({ error: "บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
             }
 
-            // แยก role ให้ชัดเจน (ถ้า role=1 ให้เป็น admin/doctor, ถ้า role=0 ให้เป็น patient)
-            const userRole = user.role === 1 ? 'admin' : 'patient';
+            // 🟢 กำหนดข้อความ role ให้ตรงกับตัวเลข (0 -> patient, 1 -> admin)[cite: 22]
+            const userRoleName = user.role === 1 ? 'admin' : 'patient';
 
+            // 🔑 ฝัง user_id และ role ลงใน Token[cite: 22]
             const token = jwt.sign(
-                { id: user.user_id, role: userRole }, 
+                { id: user.user_id, role: userRoleName }, 
                 JWT_SECRET, 
                 { expiresIn: '1d' }
             );
@@ -209,7 +249,7 @@ exports.login = async (req, res) => {
                 status: "success",
                 message: "เข้าสู่ระบบสำเร็จ!",
                 token: token,
-                role: userRole,
+                role: userRoleName,
                 user: {
                     user_id: user.user_id,
                     firstname: user.firstname,
@@ -220,7 +260,7 @@ exports.login = async (req, res) => {
             });
         }
 
-        // 🔴 ขั้นที่ 3: ไม่ตรงกับบัญชีไหนเลย
+        // 🔴 ขั้นที่ 3: ไม่ตรงกับบัญชีไหนเลย[cite: 22]
         return res.status(401).json({ error: "อีเมลหรือรหัสผ่านไม่ถูกต้อง" });
 
     } catch (err) {
@@ -229,7 +269,7 @@ exports.login = async (req, res) => {
     }
 };
 
-// 🛠️ 2. พาร์ทใหม่ (Get Me): ใช้ Token ในการ Select ข้อมูลผู้ใช้งานกลับไป
+// 🛠️ 2. ระบบ getMe (แกะ Token เช็ก ID และ Role ชัดเจน)
 exports.getMe = (req, res) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -240,19 +280,30 @@ exports.getMe = (req, res) => {
 
     jwt.verify(token, JWT_SECRET, async (err, decoded) => {
         if (err) {
+            console.log("❌ getMe Token Verify Error:", err.message);
             return res.status(403).json({ error: "Token หมดอายุหรือไม่มีความถูกต้อง" });
         }
 
+        // 🟢 แกะ ID ยืดหยุ่น (รองรับทั้ง id และ user_id ที่ฝั่งอยู่ใน Token)
+        const userId = decoded.id || decoded.user_id;
+
+        if (!userId || userId === 'undefined' || isNaN(userId)) {
+            console.log("⚠️ getMe Invalid User ID from Token Payload:", decoded);
+            return res.status(400).json({ error: "ระบุ ID ผู้ใช้งานไม่ถูกต้อง" });
+        }
+
         try {
-            // 🩺 กรณี Token เป็นสิทธิ์แพทย์
+            const connection = db.promise ? db.promise() : db;
+
+            // 🩺 กรณีที่ 1: เป็น Token ของ Doctor (role === 'doctor')
             if (decoded.role === 'doctor') {
-                const [doctorRows] = await db.promise().query(
+                const [doctorRows] = await connection.query(
                     "SELECT id, name, doctor_code, specialty, hospital_name, hospital_phone, doctor_status FROM doctors WHERE id = ?", 
-                    [decoded.id]
+                    [userId]
                 );
-                
+
                 if (doctorRows.length === 0) {
-                    return res.status(404).json({ error: "ไม่พบข้อมูลแพทย์ในระบบ" });
+                    return res.status(404).json({ error: "ไม่พบข้อมูลแพทย์" });
                 }
 
                 return res.json({
@@ -260,35 +311,38 @@ exports.getMe = (req, res) => {
                     role: "doctor",
                     user: doctorRows[0]
                 });
-            } 
-            
-            // 🟠 กรณี Token เป็นสิทธิ์ผู้ป่วย (patient)
-            // ⚠️ [FIXED ✨]: เพิ่มคอลัมน์ `image` เข้าไปในคำสั่ง SELECT
-            const [userRows] = await db.promise().query(
+            }
+
+            // 🟠 กรณีที่ 2: เป็น Token จากตาราง user (role 0 = patient, role 1 = admin)
+            const [userRows] = await connection.query(
                 `SELECT u.*, 
                         d.name AS doctor_name, 
-                        d.specialty AS doctor_specialty, 
-                        d.hospital_name, 
-                        d.hospital_phone 
+                        d.specialty AS doctor_specialty,
+                        d.hospital_name,
+                        d.hospital_phone
                 FROM user u 
                 LEFT JOIN doctors d ON u.doctor_id = d.id 
                 WHERE u.user_id = ?`, 
-                [decoded.id]
+                [userId]
             );
 
             if (userRows.length === 0) {
-                return res.status(404).json({ error: "ไม่พบผู้ใช้งานรายนี้ในระบบ" });
+                console.log(`❌ user_id: ${userId} Not Found in user table`);
+                return res.status(404).json({ error: "ไม่พบข้อมูลผู้ใช้ในระบบ" });
             }
+
+            const user = userRows[0];
+            const roleName = user.role === 1 ? 'admin' : 'patient';
 
             return res.json({
                 status: "success",
-                role: "patient",
-                user: userRows[0],
+                role: roleName,
+                user: user,
             });
 
         } catch (err) {
-            console.error("GetMe Error:", err);
-            return res.status(500).json({ error: "ดึงข้อมูลระบบโปรไฟล์ล้มเหลว", details: err.message });
+            console.error("GetMe Server Error:", err);
+            return res.status(500).json({ error: "ดึงข้อมูลโปรไฟล์ล้มเหลว", details: err.message });
         }
     });
 };
