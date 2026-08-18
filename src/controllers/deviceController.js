@@ -1,6 +1,7 @@
 const db = require('../config/db');
 
-// 1. GET: ดึงรายการอุปกรณ์ทั้งหมด + ทำ LEFT JOIN ดึงชื่อเจ้าของมาแสดงผลด้วย!
+
+// 1. GET: ดึงรายการอุปกรณ์ทั้งหมด (อัปเดต Query ให้ใช้ UNIX_TIMESTAMP เช่นกัน)
 exports.getAllDevices = async (req, res) => {
     const { user_id, device_status } = req.query;
     
@@ -9,12 +10,19 @@ exports.getAllDevices = async (req, res) => {
             SELECT 
                 d.device_id, 
                 d.device_name, 
-                d.device_image,  -- 🟢 เพิ่มคอลัมน์รูปตรงนี้ครับ
+                d.device_image, 
                 d.serial_number, 
                 d.user_id, 
                 d.device_status,
                 d.is_training,
                 d.live_count,
+                d.last_seen,
+                CASE 
+                    WHEN d.last_seen IS NOT NULL 
+                         AND (UNIX_TIMESTAMP(CURRENT_TIMESTAMP) - UNIX_TIMESTAMP(d.last_seen)) BETWEEN 0 AND 6 
+                    THEN 1 
+                    ELSE 0 
+                END AS is_online,
                 IFNULL(CONCAT(u.firstname, ' ', u.lastname), 'ยังไม่มีผู้ถือครอง') AS owner_name
             FROM device d
             LEFT JOIN user u ON d.user_id = u.user_id
@@ -164,14 +172,26 @@ exports.bindDeviceBySerial = (req, res) => {
     });
 };
 
-// 6. GET: ให้ ESP32 และ Flutter App มาเช็กสถานะการทำงาน/คำสั่งสั่งฝึก (START/STOP)
+
+
+// 6. GET: ให้ ESP32 และ Flutter App มาเช็กสถานะการทำงาน
 exports.getDeviceStatus = async (req, res) => {
     const { id } = req.params;
+    const { caller } = req.query; // รับค่า caller (iot หรือ app)
 
     try {
-        // ดึงค่า status / is_training จากตาราง device
-        const [rows] = await db.promise().query(
-            "SELECT device_id, device_name, user_id, device_status, is_training, live_count FROM device WHERE device_id = ?", 
+        const connection = db.promise ? db.promise() : db;
+
+        // 🟢 อัปเดต last_seen เฉพาะเมื่อ ESP32 เป็นคนยิงเข้ามาเท่านั้น!
+        if (caller === 'iot') {
+            await connection.query("UPDATE device SET last_seen = CURRENT_TIMESTAMP WHERE device_id = ?", [id]);
+        }
+
+        // 🟢 ใช้ UNIX_TIMESTAMP() ตัดปัญหา Timezone เพี้ยนระหว่าง Server กับ DB
+        const [rows] = await connection.query(
+            `SELECT device_id, device_name, user_id, device_status, is_training, live_count,
+                    UNIX_TIMESTAMP(CURRENT_TIMESTAMP) - UNIX_TIMESTAMP(last_seen) AS diff_seconds
+             FROM device WHERE device_id = ?`, 
             [id]
         );
 
@@ -180,12 +200,18 @@ exports.getDeviceStatus = async (req, res) => {
         }
 
         const dev = rows[0];
+
+        // 🟢 ถ้า diff_seconds ไม่เกิน 6 วินาที และไม่ใช่ค่าติดลบ ถือว่าออนไลน์จริง
+        const isOnline = (dev.diff_seconds !== null && dev.diff_seconds >= 0 && dev.diff_seconds <= 6);
+
         return res.json({
             status: "success",
             device_id: dev.device_id,
             device_name: dev.device_name,
-            training_status: String(dev.is_training), // คืนค่า true/false ให้ ESP32
-            live_count: dev.live_count || 0
+            training_status: String(dev.is_training),
+            live_count: dev.live_count || 0,
+            is_online: isOnline, // 👈 ส่งเป็น boolean (true / false) เสมอ
+            diff_seconds: dev.diff_seconds
         });
 
     } catch (err) {
@@ -208,9 +234,9 @@ exports.controlDevice = async (req, res) => {
             await db.promise().query("UPDATE device SET is_training = 'START-APP', live_count = 0 WHERE device_id = ?", [id]);
         } else if (command === 'PAUSE-APP') {
             
-            await db.promise().query("UPDATE device SET is_training = 'PAUSE-APP' WHERE device_id = ?", [id]);
+            await db.promise().query("UPDATE device SET is_training = 'PAUSE-APP'WHERE device_id = ?", [id]);
         } else {
-            await db.promise().query("UPDATE device SET is_training = 'STOP-APP' WHERE device_id = ?", [id]);
+            await db.promise().query("UPDATE device SET is_training = 'STOP-APP', live_count = 0 WHERE device_id = ?", [id]);
         }
 
         console.log(`📡 [App Control] ID: ${id} -> ${command}`);
@@ -256,4 +282,6 @@ exports.updateTrainingStatusFromIoT = async (req, res) => {
         return res.status(500).json({ error: err.message });
     }
 };
+
+
 

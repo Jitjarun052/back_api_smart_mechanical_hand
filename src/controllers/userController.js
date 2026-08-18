@@ -29,7 +29,8 @@ const upload = multer({ storage: storage, fileFilter: fileFilter });
 
 exports.upload = upload;
 
-// 🛠️ ดึงข้อมูลผู้ป่วยรายคนตาม user_id
+
+// 🛠️ ดึงข้อมูลผู้ป่วยรายคนตาม user_id (เพิ่ม target_count และ target_set)
 exports.getUserById = async (req, res) => {
     const { id } = req.params;
 
@@ -40,11 +41,12 @@ exports.getUserById = async (req, res) => {
     }
 
     try {
-        // 🟢 2. ดึงข้อมูลผู้ใช้ พร้อม Join ชื่อแพทย์ผู้ดูแล และคอลัมน์ image
+        // 🟢 2. ดึงข้อมูลผู้ใช้ พร้อม Join ชื่อแพทย์ และฟิลด์เป้าหมายการฝึก
         const sql = `
             SELECT 
                 u.user_id, u.firstname, u.lastname, u.email, u.phone, 
                 u.age, u.gender, u.symptoms, u.emergency_phone, u.status, u.image, u.doctor_id,
+                u.target_count, u.target_set,
                 IFNULL(CONCAT(d.name, ' (', d.specialty, ')'), 'ยังไม่มีแพทย์ผู้ดูแล') AS doctor_name,
                 d.hospital_name
             FROM user u
@@ -60,7 +62,10 @@ exports.getUserById = async (req, res) => {
             return res.status(404).json({ error: "ไม่พบข้อมูลผู้ใช้งานรายนี้" });
         }
 
-        return res.json(rows[0]);
+        return res.json({
+            status: "success",
+            user: rows[0]
+        });
     } catch (err) {
         console.error("GetUserById Error:", err);
         return res.status(500).json({ error: "เกิดข้อผิดพลาดในการดึงข้อมูลผู้ใช้", details: err.message });
@@ -70,6 +75,7 @@ exports.getUserById = async (req, res) => {
 // ==========================================
 
 // 2. ระบบสมัครสมาชิก (Register) เวอร์ชันรองรับรูปภาพ
+// 2. ระบบสมัครสมาชิก (Register) เวอร์ชันสมบูรณ์ (อัปเดต device + doctor_id)
 exports.register = async (req, res) => {
     const { 
         firstname, lastname, email, phone, password, 
@@ -83,51 +89,74 @@ exports.register = async (req, res) => {
     }
 
     try {
+        const connection = db.promise ? db.promise() : db;
+
         // [Logic A]: ตรวจสอบอีเมลซ้ำ
-        const [existingEmail] = await db.promise().query("SELECT user_id FROM user WHERE email = ?", [email]);
+        const [existingEmail] = await connection.query("SELECT user_id FROM user WHERE email = ?", [email]);
         if (existingEmail.length > 0) {
             return res.status(400).json({ error: "อีเมลนี้มีอยู่ในระบบแล้ว" });
         }
 
-        // [Logic B]: ค้นหา doctor_id จาก doctor_code
+        // [Logic B]: ค้นหา doctor_id (รองรับทั้ง id และ doctor_code)
         let doctorId = null;
         if (doctor_code) {
-            const [doctorResult] = await db.promise().query("SELECT id FROM doctors WHERE doctor_code = ?", [doctor_code]);
+            const [doctorResult] = await connection.query(
+                "SELECT id FROM doctors WHERE id = ? OR doctor_code = ?", 
+                [doctor_code, doctor_code]
+            );
             if (doctorResult.length > 0) {
                 doctorId = doctorResult[0].id; 
             }
         }
 
-        // 📸 [Logic พิเศษ]: เช็กว่าหน้าบ้านมีการส่งไฟล์รูปมาไหม ถ้ามีให้เอาชื่อไฟล์ไปเก็บ
+        // 📸 [Logic พิเศษ]: เช็กไฟล์รูปถ่ายโปรไฟล์
         const imageName = req.file ? req.file.filename : null;
 
-        // [Logic C]: บันทึกข้อมูลลงตาราง user (เพิ่มคอลัมน์ image ตัวที่ 12)
+        // [Logic C]: บันทึกข้อมูลลงตาราง user
         const insertUserSql = `
             INSERT INTO user (firstname, lastname, email, phone, password, role, status, age, gender, symptoms, emergency_phone, doctor_id, image) 
             VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
         `;
         
-        const [userResult] = await db.promise().query(insertUserSql, [
+        const [userResult] = await connection.query(insertUserSql, [
             firstname, lastname, email, phone, password, 
             age || null, gender || null, symptoms || null, emergency_phone || null, 
-            doctorId, imageName // ✨ หยอดชื่อไฟล์รูปภาพลงฐานข้อมูล
+            doctorId, imageName
         ]);
 
         const newUserId = userResult.insertId; 
 
-        // [Logic D]: บันทึกอุปกรณ์ลงตาราง device
-        if (serial_number && device_name) {
-            const insertDeviceSql = `INSERT INTO device (serial_number, device_name, user_id ,device_status) VALUES (?, ?, ?, ?)`;
-            await db.promise().query(insertDeviceSql, [serial_number, device_name, newUserId, 0]);
+        // 🟢 [Logic D แก้ไขแล้ว]: จัดการตาราง device (ถ้ามีซีเรียลอยู่แล้วให้ UPDATE ถ้ายังไม่มีให้ INSERT)
+        if (serial_number && serial_number.trim() !== '') {
+            const [existingDevice] = await connection.query(
+                "SELECT device_id FROM device WHERE serial_number = ?", 
+                [serial_number]
+            );
+
+            if (existingDevice.length > 0) {
+                // 🔄 มีอุปกรณ์เดิมรออยู่ -> ผูก user_id ใหม่เข้าไป
+                await connection.query(
+                    "UPDATE device SET user_id = ?, device_name = COALESCE(?, device_name) WHERE serial_number = ?",
+                    [newUserId, device_name || null, serial_number]
+                );
+                console.log(`✅ [Register] Updated device ${serial_number} for user_id: ${newUserId}`);
+            } else {
+                // ➕ ถ้ายังไม่มี -> เพิ่มอุปกรณ์ชิ้นใหม่
+                await connection.query(
+                    "INSERT INTO device (serial_number, device_name, user_id, device_status) VALUES (?, ?, ?, 0)",
+                    [serial_number, device_name || 'ถุงมืออัจฉริยะ', newUserId]
+                );
+                console.log(`✅ [Register] Inserted new device ${serial_number} for user_id: ${newUserId}`);
+            }
         }
 
         return res.json({ 
             status: "success", 
-            message: "ลงทะเบียนบัญชีผู้ป่วยพร้อมรูปถ่ายสำเร็จเรียบร้อยแล้ว!" 
+            message: "ลงทะเบียนบัญชีผู้ป่วยพร้อมข้อมูลเรียบร้อยแล้ว!" 
         });
 
     } catch (err) {
-        console.error("Register Error:", err);
+        console.error("❌ Register Error:", err);
         return res.status(500).json({ error: "เกิดข้อผิดพลาดภายในระบบ", details: err.message });
     }
 };
@@ -350,7 +379,7 @@ exports.getMe = (req, res) => {
 // 3. สำหรับ Admin: ดึงข้อมูลผู้ใช้งานทั้งหมดในระบบ (เพิ่มฟิลด์สุขภาพให้แอดมินส่องได้)
 exports.getAllUsers = (req, res) => {
     const sql = `
-        SELECT user_id, firstname, lastname, email, phone, role, status, age, gender, symptoms, emergency_phone 
+        SELECT user_id, firstname, lastname, email, phone, role, status, age, gender, symptoms, emergency_phone, target_count, target_set
         FROM user
     `;
 

@@ -219,3 +219,85 @@ exports.updateDoctorProfile = async (req, res) => {
         }
     });
 };
+
+// ในฟังก์ชัน exports.getMyPatients ให้เพิ่ม u.target_count, u.target_set ใน SELECT
+exports.getMyPatients = async (req, res) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+        return res.status(401).json({ error: "ไม่พบ Token สำหรับยืนยันตัวตน" });
+    }
+
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+        if (err || decoded.role !== 'doctor') {
+            return res.status(403).json({ error: "สิทธิ์การใช้งานไม่ถูกต้อง" });
+        }
+
+        try {
+            const sql = `
+                SELECT 
+                    u.user_id AS id,
+                    CONCAT(u.firstname, ' ', u.lastname) AS name,
+                    u.age,
+                    u.symptoms AS symptom,
+                    u.phone,
+                    u.image,
+                    u.target_count,
+                    u.target_set,
+                    (SELECT MAX(created_at) FROM history WHERE user_id = u.user_id) AS last_session_raw,
+                    (SELECT ROUND(AVG(accuracy), 0) FROM history WHERE user_id = u.user_id) AS avg_accuracy
+                FROM user u
+                WHERE u.doctor_id = ?
+                ORDER BY u.user_id DESC
+            `;
+
+            const [rows] = await db.promise().query(sql, [decoded.id]);
+            
+            console.log(`[Doctor ID: ${decoded.id}] Found Patients:`, rows.length);
+
+            return res.json({ status: "success", patients: rows });
+
+        } catch (err) {
+            console.error("Get My Patients Error:", err);
+            return res.status(500).json({ error: "เกิดข้อผิดพลาดในการดึงข้อมูลผู้ป่วย", details: err.message });
+        }
+    });
+};
+
+// -------------------------------------------------------------
+// 🩺 7. เพิ่มฟังก์ชันอัปเดตเป้าหมายการฝึกผู้ป่วย (ต่อท้ายไฟล์)
+// -------------------------------------------------------------
+exports.updatePrescription = async (req, res) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+        return res.status(401).json({ error: "ไม่พบ Token สำหรับยืนยันตัวตน" });
+    }
+
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+        if (err || decoded.role !== 'doctor') {
+            return res.status(403).json({ error: "สิทธิ์การใช้งานไม่ถูกต้อง" });
+        }
+
+        const { patient_id, target_count, target_set } = req.body;
+
+        if (!patient_id || target_count === undefined || target_set === undefined) {
+            return res.status(400).json({ status: 'error', message: 'กรุณากรอกข้อมูลให้ครบถ้วน' });
+        }
+
+        try {
+            const sql = `UPDATE user SET target_count = ?, target_set = ? WHERE user_id = ?`;
+            await db.promise().query(sql, [target_count, target_set, patient_id]);
+
+            return res.status(200).json({
+                status: 'success',
+                message: 'บันทึกแผนการฝึกกายภาพเรียบร้อยแล้ว'
+            });
+        } catch (error) {
+            console.error('Update Prescription Error:', error);
+            return res.status(500).json({ status: 'error', message: 'เกิดข้อผิดพลาดภายในเซิร์ฟเวอร์' });
+        }
+    });
+};

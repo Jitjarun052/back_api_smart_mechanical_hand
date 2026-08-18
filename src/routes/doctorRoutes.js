@@ -11,4 +11,6 @@ router.get('/my-patients', doctorController.getMyPatients);
 router.get('/history-logs', doctorController.getDoctorHistoryLogs);
 router.put('/update-profile', doctorController.updateDoctorProfile);
 
+router.put('/update-prescription', doctorController.updatePrescription);
+
 module.exports = router;
