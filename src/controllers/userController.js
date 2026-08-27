@@ -5,7 +5,7 @@ const jwt = require('jsonwebtoken');
 
 const JWT_SECRET = 'YOUR_SUPER_SECRET_KEY_2026';
 
-// 📸 1. ตั้งค่าการจัดเก็บไฟล์รูปภาพ
+// 📸 1. ตั้งค่าการจัดเก็บไฟล์รูปภาพ[cite: 15]
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
         cb(null, 'uploads/'); 
@@ -24,33 +24,29 @@ const fileFilter = (req, file, cb) => {
     }
 };
 
-// ส่งออกตัว middleware ไปใช้ที่ Router
 const upload = multer({ storage: storage, fileFilter: fileFilter });
-
 exports.upload = upload;
 
-
-// 🛠️ ดึงข้อมูลผู้ป่วยรายคนตาม user_id (เพิ่ม target_count และ target_set)
+// 🛠️ ดึงข้อมูลผู้ป่วยรายคนตาม user_id[cite: 15]
 exports.getUserById = async (req, res) => {
     const { id } = req.params;
 
-    // 🛡️ 1. ดักจับถ้า id ที่ส่งมาเป็น undefined, null หรือไม่ใช่ตัวเลข
     if (!id || id === 'undefined' || id === 'null' || isNaN(id)) {
         console.log(`⚠️ GetUserById Error: Invalid ID received -> "${id}"`);
         return res.status(400).json({ error: "ระบุ ID ผู้ใช้งานไม่ถูกต้อง" });
     }
 
     try {
-        // 🟢 2. ดึงข้อมูลผู้ใช้ พร้อม Join ชื่อแพทย์ และฟิลด์เป้าหมายการฝึก
         const sql = `
             SELECT 
                 u.user_id, u.firstname, u.lastname, u.email, u.phone, 
-                u.age, u.gender, u.symptoms, u.emergency_phone, u.status, u.image, u.doctor_id,
+                u.age, u.gender, u.symptoms, u.emergency_phone, u.status, u.image, u.doctor_id, u.hospital_id,
                 u.target_count, u.target_set,
                 IFNULL(CONCAT(d.name, ' (', d.specialty, ')'), 'ยังไม่มีแพทย์ผู้ดูแล') AS doctor_name,
-                d.hospital_name
+                h.hospital_name, h.hospital_phone
             FROM user u
             LEFT JOIN doctors d ON u.doctor_id = d.id
+            LEFT JOIN hospitals h ON u.hospital_id = h.hospital_id
             WHERE u.user_id = ?
         `;
         
@@ -58,7 +54,6 @@ exports.getUserById = async (req, res) => {
         const [rows] = await connection.query(sql, [id]);
 
         if (rows.length === 0) {
-            console.log(`❌ GetUserById: Not found user_id = ${id} in database`);
             return res.status(404).json({ error: "ไม่พบข้อมูลผู้ใช้งานรายนี้" });
         }
 
@@ -72,18 +67,14 @@ exports.getUserById = async (req, res) => {
     }
 };
 
-// ==========================================
-
-// 2. ระบบสมัครสมาชิก (Register) เวอร์ชันรองรับรูปภาพ
-// 2. ระบบสมัครสมาชิก (Register) เวอร์ชันสมบูรณ์ (อัปเดต device + doctor_id)
+// 2. ระบบสมัครสมาชิก (Register)[cite: 15]
 exports.register = async (req, res) => {
     const { 
         firstname, lastname, email, phone, password, 
         age, gender, symptoms, emergency_phone, 
-        doctor_code, serial_number, device_name 
+        doctor_code, hospital_id, serial_number, device_name 
     } = req.body;
 
-    // ตรวจสอบข้อมูลบังคับ
     if (!firstname || !lastname || !email || !phone || !password) {
         return res.status(400).json({ error: "กรุณากรอกข้อมูลพื้นฐานให้ครบถ้วน" });
     }
@@ -91,42 +82,42 @@ exports.register = async (req, res) => {
     try {
         const connection = db.promise ? db.promise() : db;
 
-        // [Logic A]: ตรวจสอบอีเมลซ้ำ
         const [existingEmail] = await connection.query("SELECT user_id FROM user WHERE email = ?", [email]);
         if (existingEmail.length > 0) {
             return res.status(400).json({ error: "อีเมลนี้มีอยู่ในระบบแล้ว" });
         }
 
-        // [Logic B]: ค้นหา doctor_id (รองรับทั้ง id และ doctor_code)
         let doctorId = null;
+        let finalHospitalId = hospital_id ? Number(hospital_id) : null;
+
         if (doctor_code) {
             const [doctorResult] = await connection.query(
-                "SELECT id FROM doctors WHERE id = ? OR doctor_code = ?", 
+                "SELECT id, hospital_id FROM doctors WHERE id = ? OR doctor_code = ?", 
                 [doctor_code, doctor_code]
             );
             if (doctorResult.length > 0) {
-                doctorId = doctorResult[0].id; 
+                doctorId = doctorResult[0].id;
+                if (!finalHospitalId && doctorResult[0].hospital_id) {
+                    finalHospitalId = doctorResult[0].hospital_id;
+                }
             }
         }
 
-        // 📸 [Logic พิเศษ]: เช็กไฟล์รูปถ่ายโปรไฟล์
         const imageName = req.file ? req.file.filename : null;
 
-        // [Logic C]: บันทึกข้อมูลลงตาราง user
         const insertUserSql = `
-            INSERT INTO user (firstname, lastname, email, phone, password, role, status, age, gender, symptoms, emergency_phone, doctor_id, image) 
-            VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
+            INSERT INTO user (firstname, lastname, email, phone, password, role, status, age, gender, symptoms, emergency_phone, doctor_id, hospital_id, image) 
+            VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [userResult] = await connection.query(insertUserSql, [
             firstname, lastname, email, phone, password, 
             age || null, gender || null, symptoms || null, emergency_phone || null, 
-            doctorId, imageName
+            doctorId, finalHospitalId, imageName
         ]);
 
         const newUserId = userResult.insertId; 
 
-        // 🟢 [Logic D แก้ไขแล้ว]: จัดการตาราง device (ถ้ามีซีเรียลอยู่แล้วให้ UPDATE ถ้ายังไม่มีให้ INSERT)
         if (serial_number && serial_number.trim() !== '') {
             const [existingDevice] = await connection.query(
                 "SELECT device_id FROM device WHERE serial_number = ?", 
@@ -134,19 +125,15 @@ exports.register = async (req, res) => {
             );
 
             if (existingDevice.length > 0) {
-                // 🔄 มีอุปกรณ์เดิมรออยู่ -> ผูก user_id ใหม่เข้าไป
                 await connection.query(
-                    "UPDATE device SET user_id = ?, device_name = COALESCE(?, device_name) WHERE serial_number = ?",
-                    [newUserId, device_name || null, serial_number]
+                    "UPDATE device SET user_id = ?, hospital_id = ?, device_name = COALESCE(?, device_name) WHERE serial_number = ?",
+                    [newUserId, finalHospitalId, device_name || null, serial_number]
                 );
-                console.log(`✅ [Register] Updated device ${serial_number} for user_id: ${newUserId}`);
             } else {
-                // ➕ ถ้ายังไม่มี -> เพิ่มอุปกรณ์ชิ้นใหม่
                 await connection.query(
-                    "INSERT INTO device (serial_number, device_name, user_id, device_status) VALUES (?, ?, ?, 0)",
-                    [serial_number, device_name || 'ถุงมืออัจฉริยะ', newUserId]
+                    "INSERT INTO device (serial_number, device_name, user_id, hospital_id, device_status) VALUES (?, ?, ?, ?, 0)",
+                    [serial_number, device_name || 'ถุงมืออัจฉริยะ', newUserId, finalHospitalId]
                 );
-                console.log(`✅ [Register] Inserted new device ${serial_number} for user_id: ${newUserId}`);
             }
         }
 
@@ -161,48 +148,7 @@ exports.register = async (req, res) => {
     }
 };
 
-// 2. ระบบเข้าสู่ระบบ (Login) - เพิ่มการส่งคืนข้อมูลสุขภาพเพื่อไปแสดงบนหน้าจอ Patient Info
-// exports.login = (req, res) => {
-//     const { email, password } = req.body;
-
-//     const sql = `
-//         SELECT u.*, d.name AS doctor_name, d.specialty AS doctor_specialty, d.hospital_name, d.hospital_phone 
-//         FROM user u
-//         LEFT JOIN doctors d ON u.doctor_id = d.id
-//         WHERE u.email = ? AND u.password = ?
-//     `;
-    
-//     db.query(sql, [email, password], (err, results) => {
-//         if (err) {
-//             return res.status(500).json({ error: "เกิดข้อผิดพลาดในการตรวจสอบข้อมูล", details: err.message });
-//         }
-//         if (results.length === 0) {
-//             return res.status(401).json({ error: "อีเมลหรือรหัสผ่านไม่ถูกต้อง" });
-//         }
-
-//         const user = results[0];
-
-//         if (user.status === 1) {
-//             return res.status(403).json({ error: "บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
-//         }
-
-//         // 🔑 สร้าง Token โดยฝังข้อมูลสิทธิ์และไอดีไว้ข้างใน (มีอายุใช้งาน 1 วัน)
-//         const token = jwt.sign(
-//             { user_id: user.user_id, role: user.role }, 
-//             JWT_SECRET, 
-//             { expiresIn: '1d' }
-//         );
-
-//         // 📡 ส่งเฉพาะ Token กลับไปให้หน้าบ้านเก็บลง Storage ตามที่คุณจิตร์จรัญต้องการ
-//         res.json({
-//             status: "success",
-//             message: "เข้าสู่ระบบสำเร็จ!",
-//             token: token
-//         });
-//     });
-// };
-
-// 🟢 1. ระบบ Login (เช็กแยกตารางแพทย์ และ ตาราง user ชัดเจน)[cite: 22]
+// 🟢 1. ระบบ Login[cite: 15]
 exports.login = async (req, res) => {
     const { email, password } = req.body;
 
@@ -213,7 +159,7 @@ exports.login = async (req, res) => {
     try {
         const connection = db.promise ? db.promise() : db;
 
-        // 🔍 ขั้นที่ 1: ลองค้นหาในตาราง doctors ก่อน[cite: 22]
+        // 🔍 ฝั่ง Doctor[cite: 15]
         try {
             const doctorSql = `SELECT * FROM doctors WHERE email = ? AND password = ?`;
             const [doctorRows] = await connection.query(doctorSql, [email, password]);
@@ -225,9 +171,8 @@ exports.login = async (req, res) => {
                     return res.status(403).json({ error: "บัญชีแพทย์ของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
                 }
 
-                // 🔑 สร้าง Token สำหรับแพทย์โดยเฉพาะ
                 const token = jwt.sign(
-                    { id: doctor.id, role: 'doctor' }, 
+                    { id: doctor.id, role: 'doctor', hospital_id: doctor.hospital_id }, 
                     JWT_SECRET, 
                     { expiresIn: '1d' }
                 );
@@ -240,7 +185,8 @@ exports.login = async (req, res) => {
                     user: {
                         id: doctor.id,
                         name: doctor.name,
-                        doctor_code: doctor.doctor_code
+                        doctor_code: doctor.doctor_code,
+                        hospital_id: doctor.hospital_id
                     }
                 });
             }
@@ -248,11 +194,12 @@ exports.login = async (req, res) => {
             console.log("Doctors table query skipped:", doctorQueryErr.message);
         }
 
-        // 🔍 ขั้นที่ 2: ค้นหาในตาราง user (role 0 = user, role 1 = admin)[cite: 22]
+        // 🔍 ฝั่ง User / Admin[cite: 15]
         const userSql = `
-            SELECT u.*, d.name AS doctor_name, d.specialty AS doctor_specialty, d.hospital_name, d.hospital_phone 
+            SELECT u.*, d.name AS doctor_name, d.specialty AS doctor_specialty, h.hospital_name, h.hospital_phone 
             FROM user u
             LEFT JOIN doctors d ON u.doctor_id = d.id
+            LEFT JOIN hospitals h ON u.hospital_id = h.hospital_id
             WHERE u.email = ? AND u.password = ?
         `;
         const [userRows] = await connection.query(userSql, [email, password]);
@@ -264,12 +211,19 @@ exports.login = async (req, res) => {
                 return res.status(403).json({ error: "บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
             }
 
-            // 🟢 กำหนดข้อความ role ให้ตรงกับตัวเลข (0 -> patient, 1 -> admin)[cite: 22]
-            const userRoleName = user.role === 1 ? 'admin' : 'patient';
+            let userRoleName = user.role === 1 ? 'admin' : 'patient';
+            let adminType = null;
 
-            // 🔑 ฝัง user_id และ role ลงใน Token[cite: 22]
+            if (user.role === 1) {
+                if (user.email.includes('super') || user.email.endsWith('@adminsuper.com')) {
+                    adminType = 'super_admin';
+                } else {
+                    adminType = 'hospital_admin';
+                }
+            }
+
             const token = jwt.sign(
-                { id: user.user_id, role: userRoleName }, 
+                { id: user.user_id, role: userRoleName, admin_type: adminType, hospital_id: user.hospital_id }, 
                 JWT_SECRET, 
                 { expiresIn: '1d' }
             );
@@ -279,17 +233,19 @@ exports.login = async (req, res) => {
                 message: "เข้าสู่ระบบสำเร็จ!",
                 token: token,
                 role: userRoleName,
+                admin_type: adminType,
                 user: {
                     user_id: user.user_id,
                     firstname: user.firstname,
                     lastname: user.lastname,
                     email: user.email,
-                    role: user.role
+                    role: user.role,
+                    admin_type: adminType,
+                    hospital_id: user.hospital_id
                 }
             });
         }
 
-        // 🔴 ขั้นที่ 3: ไม่ตรงกับบัญชีไหนเลย[cite: 22]
         return res.status(401).json({ error: "อีเมลหรือรหัสผ่านไม่ถูกต้อง" });
 
     } catch (err) {
@@ -298,7 +254,7 @@ exports.login = async (req, res) => {
     }
 };
 
-// 🛠️ 2. ระบบ getMe (แกะ Token เช็ก ID และ Role ชัดเจน)
+// 🛠️ 2. ระบบ getMe[cite: 15]
 exports.getMe = (req, res) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
@@ -309,27 +265,35 @@ exports.getMe = (req, res) => {
 
     jwt.verify(token, JWT_SECRET, async (err, decoded) => {
         if (err) {
-            console.log("❌ getMe Token Verify Error:", err.message);
             return res.status(403).json({ error: "Token หมดอายุหรือไม่มีความถูกต้อง" });
         }
 
-        // 🟢 แกะ ID ยืดหยุ่น (รองรับทั้ง id และ user_id ที่ฝั่งอยู่ใน Token)
         const userId = decoded.id || decoded.user_id;
 
-        if (!userId || userId === 'undefined' || isNaN(userId)) {
-            console.log("⚠️ getMe Invalid User ID from Token Payload:", decoded);
+        if (!userId || isNaN(userId)) {
             return res.status(400).json({ error: "ระบุ ID ผู้ใช้งานไม่ถูกต้อง" });
         }
 
         try {
             const connection = db.promise ? db.promise() : db;
 
-            // 🩺 กรณีที่ 1: เป็น Token ของ Doctor (role === 'doctor')
+            // 🩺 หมอ (ดึงจากตาราง hospitals โดยตรง)[cite: 15]
             if (decoded.role === 'doctor') {
-                const [doctorRows] = await connection.query(
-                    "SELECT id, name, doctor_code, specialty, hospital_name, hospital_phone, doctor_status FROM doctors WHERE id = ?", 
-                    [userId]
-                );
+                const [doctorRows] = await connection.query(`
+                    SELECT 
+                        d.id, 
+                        d.name, 
+                        d.doctor_code, 
+                        d.specialty, 
+                        d.role_type,
+                        d.doctor_status,
+                        d.hospital_id,
+                        h.hospital_name, 
+                        h.hospital_phone
+                    FROM doctors d
+                    LEFT JOIN hospitals h ON d.hospital_id = h.hospital_id
+                    WHERE d.id = ?
+                `, [userId]);
 
                 if (doctorRows.length === 0) {
                     return res.status(404).json({ error: "ไม่พบข้อมูลแพทย์" });
@@ -342,31 +306,44 @@ exports.getMe = (req, res) => {
                 });
             }
 
-            // 🟠 กรณีที่ 2: เป็น Token จากตาราง user (role 0 = patient, role 1 = admin)
+            // 🟠 ผู้ป่วย / แอดมิน[cite: 15]
             const [userRows] = await connection.query(
                 `SELECT u.*, 
                         d.name AS doctor_name, 
                         d.specialty AS doctor_specialty,
-                        d.hospital_name,
-                        d.hospital_phone
+                        h.hospital_name,
+                        h.hospital_phone
                 FROM user u 
                 LEFT JOIN doctors d ON u.doctor_id = d.id 
+                LEFT JOIN hospitals h ON u.hospital_id = h.hospital_id
                 WHERE u.user_id = ?`, 
                 [userId]
             );
 
             if (userRows.length === 0) {
-                console.log(`❌ user_id: ${userId} Not Found in user table`);
                 return res.status(404).json({ error: "ไม่พบข้อมูลผู้ใช้ในระบบ" });
             }
 
             const user = userRows[0];
             const roleName = user.role === 1 ? 'admin' : 'patient';
+            
+            let adminType = null;
+            if (user.role === 1) {
+                if (user.email.includes('super') || user.email.endsWith('@adminsuper.com')) {
+                    adminType = 'super_admin';
+                } else {
+                    adminType = 'hospital_admin';
+                }
+            }
 
             return res.json({
                 status: "success",
                 role: roleName,
-                user: user,
+                admin_type: adminType,
+                user: {
+                    ...user,
+                    admin_type: adminType
+                }
             });
 
         } catch (err) {
@@ -376,22 +353,54 @@ exports.getMe = (req, res) => {
     });
 };
 
-// 3. สำหรับ Admin: ดึงข้อมูลผู้ใช้งานทั้งหมดในระบบ (เพิ่มฟิลด์สุขภาพให้แอดมินส่องได้)
-exports.getAllUsers = (req, res) => {
-    const sql = `
-        SELECT user_id, firstname, lastname, email, phone, role, status, age, gender, symptoms, emergency_phone, target_count, target_set
-        FROM user
-    `;
 
-    db.query(sql, (err, results) => {
-        if (err) {
-            return res.status(500).json({ error: "ไม่สามารถดึงข้อมูลผู้ใช้งานได้", details: err.message });
+// 3. สำหรับ Admin: ดึงข้อมูลผู้ป่วย (JOIN ข้อมูลแพทย์, อุปกรณ์ และกรองตาม รพ.)
+exports.getAllUsers = async (req, res) => {
+    const { hospital_id } = req.query; // 👈 รองรับการกรองตามโรงพยาบาล
+
+    try {
+        let sql = `
+            SELECT 
+                u.user_id, 
+                u.firstname, 
+                u.lastname, 
+                u.email, 
+                u.phone, 
+                u.role, 
+                u.status, 
+                u.age, 
+                u.gender, 
+                u.symptoms, 
+                u.emergency_phone, 
+                u.hospital_id,
+                IFNULL(CONCAT(d.name, ' (', d.specialty, ')'), NULL) AS doctor_name,
+                dev.serial_number,
+                h.hospital_name
+            FROM user u
+            LEFT JOIN doctors d ON u.doctor_id = d.id
+            LEFT JOIN device dev ON u.user_id = dev.user_id
+            LEFT JOIN hospitals h ON u.hospital_id = h.hospital_id
+            WHERE u.role = 0
+        `;
+        const params = [];
+
+        // กรองเฉพาะโรงพยาบาลของแอดมินคนนั้น
+        if (hospital_id) {
+            sql += ` AND u.hospital_id = ?`;
+            params.push(hospital_id);
         }
-        res.json(results);
-    });
+
+        sql += ` ORDER BY u.user_id DESC`;
+
+        const [results] = await db.promise().query(sql, params);
+        return res.json(results);
+    } catch (err) {
+        console.error("Get All Users Error:", err);
+        return res.status(500).json({ error: "ไม่สามารถดึงข้อมูลผู้ใช้งานได้", details: err.message });
+    }
 };
 
-// 4. สำหรับ Admin: สั่งระงับ หรือ ปลดระงับผู้ใช้งาน (คงเดิม)
+// 4. สำหรับ Admin: สั่งระงับ หรือ ปลดระงับ[cite: 15]
 exports.updateStatus = (req, res) => {
     const { id } = req.params; 
     const { status } = req.body; 
@@ -413,13 +422,10 @@ exports.updateStatus = (req, res) => {
     });
 };
 
-// 1. เช็กความถูกต้องของ Email + Phone
+// 5. Verify Identity & Reset Password[cite: 15]
 exports.verifyIdentity = async (req, res) => {
   const { email, phone } = req.body;
-
-  if (!email || !phone) {
-    return res.status(400).json({ error: "กรุณากรอกข้อมูลให้ครบถ้วน" });
-  }
+  if (!email || !phone) return res.status(400).json({ error: "กรุณากรอกข้อมูลให้ครบถ้วน" });
 
   try {
     const [users] = await db.promise().query(
@@ -427,81 +433,47 @@ exports.verifyIdentity = async (req, res) => {
       [email, phone, phone]
     );
 
-    if (users.length === 0) {
-      return res.status(404).json({ error: "ไม่พบข้อมูลบัญชีที่ตรงกับอีเมลและเบอร์โทรนี้" });
-    }
+    if (users.length === 0) return res.status(404).json({ error: "ไม่พบข้อมูลบัญชี" });
 
-    return res.json({ 
-      status: "success", 
-      message: "ยืนยันตัวตนสำเร็จ",
-      userId: users[0].user_id,
-      firstname: users[0].firstname
-    });
+    return res.json({ status: "success", message: "ยืนยันตัวตนสำเร็จ", userId: users[0].user_id, firstname: users[0].firstname });
   } catch (err) {
-    console.error("Verify Identity Error:", err);
     return res.status(500).json({ error: "เกิดข้อผิดพลาดภายในระบบ" });
   }
 };
 
-// 2. อัปเดตรหัสผ่านใหม่
 exports.resetPassword = async (req, res) => {
   const { userId, newPassword } = req.body;
-
-  if (!userId || !newPassword) {
-    return res.status(400).json({ error: "ข้อมูลไม่ครบถ้วน" });
-  }
+  if (!userId || !newPassword) return res.status(400).json({ error: "ข้อมูลไม่ครบถ้วน" });
 
   try {
-    await db.promise().query(
-      "UPDATE user SET password = ? WHERE user_id = ?",
-      [newPassword, userId]
-    );
-
+    await db.promise().query("UPDATE user SET password = ? WHERE user_id = ?", [newPassword, userId]);
     return res.json({ status: "success", message: "รีเซ็ตรหัสผ่านใหม่เรียบร้อยแล้ว!" });
   } catch (err) {
-    console.error("Reset Password Error:", err);
     return res.status(500).json({ error: "เกิดข้อผิดพลาดภายในระบบ" });
   }
 };
 
-// 🛠️ 5. ระบบแก้ไขข้อมูลส่วนตัวผู้ป่วย (Update Profile)
+// 6. แก้ไขโปรไฟล์[cite: 15]
 exports.updateProfile = async (req, res) => {
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
-
-    if (!token) {
-        return res.status(401).json({ error: "ไม่พบ Token สำหรับยืนยันตัวตน" });
-    }
+    if (!token) return res.status(401).json({ error: "ไม่พบ Token" });
 
     jwt.verify(token, JWT_SECRET, async (err, decoded) => {
-        if (err) {
-            return res.status(403).json({ error: "Token หมดอายุหรือไม่มีความถูกต้อง" });
-        }
+        if (err) return res.status(403).json({ error: "Token หมดอายุ" });
 
         const { firstname, lastname, age, gender, symptoms, emergency_phone, doctor_id } = req.body;
 
         try {
-            // อัปเดตข้อมูลผู้ป่วยในตาราง user ตาม user_id ที่อยู่ใน Token
             const updateSql = `
                 UPDATE user 
                 SET firstname = ?, lastname = ?, age = ?, gender = ?, symptoms = ?, emergency_phone = ?, doctor_id = ?
                 WHERE user_id = ?
             `;
-
-            await db.promise().query(updateSql, [
-                firstname, lastname, age || null, gender || null, 
-                symptoms || null, emergency_phone || null, doctor_id || null, 
-                decoded.id
-            ]);
-
-            return res.json({
-                status: "success",
-                message: "อัปเดตข้อมูลส่วนตัวเรียบร้อยแล้ว!"
-            });
-
+            await db.promise().query(updateSql, [firstname, lastname, age || null, gender || null, symptoms || null, emergency_phone || null, doctor_id || null, decoded.id]);
+            return res.json({ status: "success", message: "อัปเดตข้อมูลเรียบร้อยแล้ว!" });
         } catch (err) {
-            console.error("Update Profile Error:", err);
-            return res.status(500).json({ error: "เกิดข้อผิดพลาดในการอัปเดตข้อมูล", details: err.message });
+            return res.status(500).json({ error: "เกิดข้อผิดพลาดในการอัปเดต" });
         }
     });
 };

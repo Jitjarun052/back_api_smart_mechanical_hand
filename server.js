@@ -18,6 +18,7 @@ const deviceRoutes = require('./src/routes/deviceRoutes');
 const doctorRouter = require('./src/routes/doctorRoutes');
 const dashboardController = require('./src/routes/dashboardRoutes');
 const notificationRoutes = require('./src/routes/notificationRoutes');
+const hospitalRoutes = require('./src/routes/hospitalRoutes');
 
 // เปิดใช้งานพาร์ทเริ่มต้นเชื่อมไปหาชุดเส้นทางย่อย
 app.use('/api/history', historyRoutes);
@@ -26,6 +27,7 @@ app.use('/api/device', deviceRoutes);
 app.use('/api/doctor', doctorRouter);
 app.use('/api/dashboard', dashboardController);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/hospital', hospitalRoutes);
 
 // Path ทดสอบหน้าแรกของเซิร์ฟเวอร์
 app.get('/api', (req, res) => {
