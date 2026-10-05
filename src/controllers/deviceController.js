@@ -14,6 +14,7 @@ exports.getAllDevices = async (req, res) => {
                 d.serial_number, 
                 d.user_id, 
                 d.device_status,
+                d.hospital_id,
                 d.is_training,
                 d.live_count,
                 d.last_seen,
@@ -23,9 +24,11 @@ exports.getAllDevices = async (req, res) => {
                     THEN 1 
                     ELSE 0 
                 END AS is_online,
-                IFNULL(CONCAT(u.firstname, ' ', u.lastname), 'ยังไม่มีผู้ถือครอง') AS owner_name
+                IFNULL(CONCAT(u.firstname, ' ', u.lastname), 'ยังไม่มีผู้ถือครอง') AS owner_name,
+                IFNULL(h.hospital_name, 'คลังกลาง (ยังไม่จัดสรร)') AS hospital_name
             FROM device d
             LEFT JOIN user u ON d.user_id = u.user_id
+            LEFT JOIN hospitals h ON d.hospital_id = h.hospital_id
             WHERE 1=1
         `;
         let params = [];
@@ -56,17 +59,17 @@ exports.getAllDevices = async (req, res) => {
     }
 };
 
-// 2. POST: ลงทะเบียนเพิ่มอุปกรณ์ชิ้นใหม่เข้าสู่ระบบ (คงเดิม)
+// 2. POST: ลงทะเบียนเพิ่มอุปกรณ์ชิ้นใหม่เข้าสู่ระบบ (รองรับ hospital_id)
 exports.createDevice = (req, res) => {
-    const { device_name, serial_number, user_id } = req.body;
+    const { device_name, serial_number, user_id, hospital_id } = req.body;
 
     if (!device_name || !serial_number || user_id === undefined) {
         return res.status(400).json({ error: "กรุณากรอกข้อมูลอุปกรณ์ให้ครบถ้วน" });
     }
 
-    const sql = "INSERT INTO device (device_name, serial_number, user_id, device_status) VALUES (?, ?, ?, 0)";
+    const sql = "INSERT INTO device (device_name, serial_number, user_id, hospital_id, device_status) VALUES (?, ?, ?, ?, 0)";
 
-    db.query(sql, [device_name, serial_number, user_id], (err, result) => {
+    db.query(sql, [device_name, serial_number, user_id, hospital_id ? Number(hospital_id) : null], (err, result) => {
         if (err) {
             return res.status(500).json({ error: "ไม่สามารถเพิ่มอุปกรณ์ได้", details: err.message });
         }
@@ -280,6 +283,101 @@ exports.updateTrainingStatusFromIoT = async (req, res) => {
 
     } catch (err) {
         return res.status(500).json({ error: err.message });
+    }
+};
+// 🔍 10. GET: เช็กความถูกต้องของ Serial Number ก่อนลงทะเบียนผู้ป่วย
+exports.checkDeviceBySerial = async (req, res) => {
+    const { serial_number } = req.params;
+
+    if (!serial_number) {
+        return res.status(400).json({ 
+            available: false, 
+            message: "กรุณาระบุหมายเลข Serial Number" 
+        });
+    }
+
+    try {
+        const connection = db.promise ? db.promise() : db;
+        const [devices] = await connection.query(
+            "SELECT device_id, device_name, serial_number, user_id, device_status FROM device WHERE serial_number = ?",
+            [serial_number]
+        );
+
+        // ❌ ไม่พบอุปกรณ์ในฐานข้อมูล
+        if (devices.length === 0) {
+            return res.status(404).json({ 
+                available: false, 
+                message: "ไม่พบหมายเลขซีเรียลนัมเบอร์นี้ในระบบ" 
+            });
+        }
+
+        const device = devices[0];
+
+        // ⚠️ อุปกรณ์ถูกผูกกับคนไข้คนอื่นไปแล้ว (user_id ไม่ใช่ NULL)
+        if (device.user_id !== null && device.user_id !== undefined) {
+            return res.status(400).json({ 
+                available: false, 
+                message: "อุปกรณ์หมายเลขนี้ถูกลงทะเบียนใช้งานไปแล้ว" 
+            });
+        }
+
+        // ⛔ อุปกรณ์ถูกระงับสิทธิ์การใช้งาน (device_status = 1)
+        if (device.device_status === 1) {
+            return res.status(400).json({ 
+                available: false, 
+                message: "อุปกรณ์หมายเลขนี้ถูกระงับสิทธิ์การใช้งานชั่วคราว" 
+            });
+        }
+
+        // ✅ อุปกรณ์พร้อมใช้งาน
+        return res.json({ 
+            available: true, 
+            message: "หมายเลขซีเรียลนัมเบอร์ถูกต้อง พร้อมใช้งาน",
+            device: {
+                device_id: device.device_id,
+                device_name: device.device_name,
+                serial_number: device.serial_number
+            }
+        });
+
+    } catch (err) {
+        console.error("Check Device Error:", err);
+        return res.status(500).json({ 
+            available: false, 
+            error: "เกิดข้อผิดพลาดในการตรวจสอบอุปกรณ์", 
+            details: err.message 
+        });
+    }
+};
+exports.getAvailableDevices = async (req, res) => {
+    try {
+        const connection = db.promise ? db.promise() : db;
+        
+        // ค้นหาอุปกรณ์ที่ยังไม่มี hospital_id (หรือ hospital_id เป็น NULL)
+        const sql = `
+            SELECT 
+                device_id AS id, 
+                serial_number, 
+                device_name, 
+                device_status 
+            FROM device 
+            WHERE hospital_id IS NULL OR hospital_id = 0
+            ORDER BY device_id DESC
+        `;
+
+        const [results] = await connection.query(sql);
+
+        return res.json({
+            status: "success",
+            data: results
+        });
+
+    } catch (err) {
+        console.error("❌ Get Available Devices Error:", err);
+        return res.status(500).json({ 
+            error: "ไม่สามารถดึงข้อมูลอุปกรณ์ที่ว่างได้", 
+            details: err.message 
+        });
     }
 };
 

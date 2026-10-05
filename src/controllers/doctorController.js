@@ -4,7 +4,9 @@ const JWT_SECRET = 'YOUR_SUPER_SECRET_KEY_2026';
 
 // 1. เพิ่มข้อมูลแพทย์ใหม่เข้าสู่ระบบ[cite: 16]
 exports.createDoctor = async (req, res) => {
-    const { doctor_code, name, specialty, role_type, hospital_id } = req.body;
+    // 🟢 1. ดึง email และ password เพิ่มเติมจาก req.body
+    const { doctor_code, name, specialty, role_type, hospital_id, email, password } = req.body;
+    
     if (!doctor_code || !name || !hospital_id) {
         return res.status(400).json({ error: "กรุณากรอกข้อมูลที่จำเป็นให้ครบถ้วน (รหัสแพทย์, ชื่อ, โรงพยาบาล)" });
     }
@@ -13,11 +15,22 @@ exports.createDoctor = async (req, res) => {
         if (existingDoctor.length > 0) {
             return res.status(400).json({ error: "รหัสแพทย์นี้มีอยู่ในระบบแล้ว" });
         }
+
+        // 🟢 2. เพิ่มช่อง email และ password ในคำสั่ง SQL
         const sql = `
-            INSERT INTO doctors (doctor_code, name, specialty, role_type, hospital_id) 
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO doctors (doctor_code, name, specialty, role_type, hospital_id, email, password) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         `;
-        await db.promise().query(sql, [doctor_code, name, specialty || null, role_type || 'doctor', hospital_id]);
+        await db.promise().query(sql, [
+            doctor_code, 
+            name, 
+            specialty || null, 
+            role_type || 'doctor', 
+            hospital_id, 
+            email || null, 
+            password || null
+        ]);
+
         return res.status(201).json({ status: "success", message: "เพิ่มข้อมูลแพทย์สำเร็จเรียบร้อยแล้ว!" });
     } catch (err) {
         console.error("Create Doctor Error:", err);
@@ -37,6 +50,7 @@ exports.getAllDoctors = async (req, res) => {
                 d.specialty, 
                 d.role_type,
                 d.email,
+                d.password,
                 d.hospital_id,
                 h.hospital_name, 
                 h.hospital_phone, 

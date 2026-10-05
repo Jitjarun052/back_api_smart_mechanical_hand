@@ -75,16 +75,19 @@ exports.register = async (req, res) => {
         doctor_code, hospital_id, serial_number, device_name 
     } = req.body;
 
-    if (!firstname || !lastname || !email || !phone || !password) {
+    if (!firstname || !lastname  || !phone || !password) {
         return res.status(400).json({ error: "กรุณากรอกข้อมูลพื้นฐานให้ครบถ้วน" });
     }
 
     try {
         const connection = db.promise ? db.promise() : db;
 
-        const [existingEmail] = await connection.query("SELECT user_id FROM user WHERE email = ?", [email]);
-        if (existingEmail.length > 0) {
-            return res.status(400).json({ error: "อีเมลนี้มีอยู่ในระบบแล้ว" });
+        const trimmedEmail = email && email.trim() !== '' ? email.trim() : null;
+        if (trimmedEmail) {
+            const [existingEmail] = await connection.query("SELECT user_id FROM user WHERE email = ?", [trimmedEmail]);
+            if (existingEmail.length > 0) {
+                return res.status(400).json({ error: "อีเมลนี้มีอยู่ในระบบแล้ว" });
+            }
         }
 
         let doctorId = null;
@@ -111,7 +114,7 @@ exports.register = async (req, res) => {
         `;
         
         const [userResult] = await connection.query(insertUserSql, [
-            firstname, lastname, email, phone, password, 
+            firstname, lastname, trimmedEmail, phone, password, 
             age || null, gender || null, symptoms || null, emergency_phone || null, 
             doctorId, finalHospitalId, imageName
         ]);
@@ -148,25 +151,93 @@ exports.register = async (req, res) => {
     }
 };
 
-// 🟢 1. ระบบ Login[cite: 15]
+// 🟢 1. ระบบ Login (รองรับทั้ง Email และ Phone)
+// 🟢 1. ระบบ Login (แยกเช็ก Super Admin จากตาราง user และ Hospital Admin จากตาราง hospitals)
 exports.login = async (req, res) => {
     const { email, password } = req.body;
+    const identifier = email; 
 
-    if (!email || !password) {
-        return res.status(400).json({ error: "กรุณากรอกอีเมลและรหัสผ่านให้ครบถ้วน" });
+    if (!identifier || !password) {
+        return res.status(400).json({ error: "กรุณากรอกอีเมลหรือเบอร์โทรศัพท์และรหัสผ่านให้ครบถ้วน" });
     }
 
     try {
         const connection = db.promise ? db.promise() : db;
 
-        // 🔍 ฝั่ง Doctor[cite: 15]
+        // 1️⃣ 🔍 เช็กว่าเป็น Super Admin หรือไม่ (จากตาราง user ที่ role = 1 และมีเงื่อนไข super)
+        const superAdminSql = `
+            SELECT * FROM user 
+            WHERE (email = ? OR phone = ?) AND password = ? AND role = 1 
+            AND (email LIKE '%super%' OR email LIKE '%@adminsuper.com%')
+        `;
+        const [superRows] = await connection.query(superAdminSql, [identifier, identifier, password]);
+
+        if (superRows.length > 0) {
+            const admin = superRows[0];
+            const token = jwt.sign(
+                { id: admin.user_id, role: 'admin', admin_type: 'super_admin', hospital_id: null }, 
+                JWT_SECRET, 
+                { expiresIn: '1d' }
+            );
+
+            return res.json({
+                status: "success",
+                message: "เข้าสู่ระบบในฐานะ Super Admin สำเร็จ!",
+                token: token,
+                role: "admin",
+                admin_type: "super_admin",
+                user: {
+                    user_id: admin.user_id,
+                    firstname: admin.firstname,
+                    lastname: admin.lastname,
+                    email: admin.email,
+                    role: 1,
+                    admin_type: 'super_admin',
+                    hospital_id: null
+                }
+            });
+        }
+
+        // 2️⃣ 🔍 เช็กว่าเป็น Hospital Admin หรือไม่ (เช็กจากตาราง hospitals โดยตรง)
+        const hospitalAdminSql = `
+            SELECT * FROM hospitals 
+            WHERE email = ? AND password = ?
+        `;
+        const [hospRows] = await connection.query(hospitalAdminSql, [identifier, password]);
+
+        if (hospRows.length > 0) {
+            const hosp = hospRows[0];
+            const token = jwt.sign(
+                { id: hosp.hospital_id, role: 'admin', admin_type: 'hospital_admin', hospital_id: hosp.hospital_id }, 
+                JWT_SECRET, 
+                { expiresIn: '1d' }
+            );
+
+            return res.json({
+                status: "success",
+                message: "เข้าสู่ระบบในฐานะ Hospital Admin สำเร็จ!",
+                token: token,
+                role: "admin",
+                admin_type: "hospital_admin",
+                user: {
+                    user_id: hosp.hospital_id,
+                    firstname: hosp.hospital_name,
+                    lastname: '(Admin)',
+                    email: hosp.email,
+                    role: 1,
+                    admin_type: 'hospital_admin',
+                    hospital_id: hosp.hospital_id
+                }
+            });
+        }
+
+        // 3️⃣ 🔍 เช็กว่าเป็นแพทย์ (Doctor)
         try {
             const doctorSql = `SELECT * FROM doctors WHERE email = ? AND password = ?`;
-            const [doctorRows] = await connection.query(doctorSql, [email, password]);
+            const [doctorRows] = await connection.query(doctorSql, [identifier, password]);
 
             if (doctorRows.length > 0) {
                 const doctor = doctorRows[0];
-
                 if (doctor.doctor_status === 1) {
                     return res.status(403).json({ error: "บัญชีแพทย์ของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
                 }
@@ -194,36 +265,24 @@ exports.login = async (req, res) => {
             console.log("Doctors table query skipped:", doctorQueryErr.message);
         }
 
-        // 🔍 ฝั่ง User / Admin[cite: 15]
+        // 4️⃣ 🔍 เช็กว่าเป็นผู้ป่วยทั่วไป (Patient)
         const userSql = `
             SELECT u.*, d.name AS doctor_name, d.specialty AS doctor_specialty, h.hospital_name, h.hospital_phone 
             FROM user u
             LEFT JOIN doctors d ON u.doctor_id = d.id
             LEFT JOIN hospitals h ON u.hospital_id = h.hospital_id
-            WHERE u.email = ? AND u.password = ?
+            WHERE (u.email = ? OR u.phone = ?) AND u.password = ? AND u.role = 0
         `;
-        const [userRows] = await connection.query(userSql, [email, password]);
+        const [userRows] = await connection.query(userSql, [identifier, identifier, password]);
 
         if (userRows.length > 0) {
             const user = userRows[0];
-
             if (user.status === 1) {
                 return res.status(403).json({ error: "บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อผู้ดูแลระบบ" });
             }
 
-            let userRoleName = user.role === 1 ? 'admin' : 'patient';
-            let adminType = null;
-
-            if (user.role === 1) {
-                if (user.email.includes('super') || user.email.endsWith('@adminsuper.com')) {
-                    adminType = 'super_admin';
-                } else {
-                    adminType = 'hospital_admin';
-                }
-            }
-
             const token = jwt.sign(
-                { id: user.user_id, role: userRoleName, admin_type: adminType, hospital_id: user.hospital_id }, 
+                { id: user.user_id, role: 'patient', admin_type: null, hospital_id: user.hospital_id }, 
                 JWT_SECRET, 
                 { expiresIn: '1d' }
             );
@@ -232,26 +291,140 @@ exports.login = async (req, res) => {
                 status: "success",
                 message: "เข้าสู่ระบบสำเร็จ!",
                 token: token,
-                role: userRoleName,
-                admin_type: adminType,
+                role: "patient",
+                admin_type: null,
                 user: {
                     user_id: user.user_id,
                     firstname: user.firstname,
                     lastname: user.lastname,
                     email: user.email,
-                    role: user.role,
-                    admin_type: adminType,
+                    phone: user.phone,
+                    role: 0,
                     hospital_id: user.hospital_id
                 }
             });
         }
 
-        return res.status(401).json({ error: "อีเมลหรือรหัสผ่านไม่ถูกต้อง" });
+        return res.status(401).json({ error: "อีเมล/เบอร์โทรศัพท์ หรือรหัสผ่านไม่ถูกต้อง" });
 
     } catch (err) {
         console.error("Smart Login Error:", err);
         return res.status(500).json({ error: "เกิดข้อผิดพลาดในการตรวจสอบข้อมูล", details: err.message });
     }
+};
+
+// 🛠️ 2. ระบบ getMe (รองรับการตรวจสอบ Token ของ Hospital Admin จากตาราง hospitals)
+exports.getMe = (req, res) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+        return res.status(401).json({ error: "ไม่พบ Token สำหรับยืนยันตัวตน" });
+    }
+
+    jwt.verify(token, JWT_SECRET, async (err, decoded) => {
+        if (err) {
+            return res.status(403).json({ error: "Token หมดอายุหรือไม่มีความถูกต้อง" });
+        }
+
+        const userId = decoded.id || decoded.user_id;
+        const adminType = decoded.admin_type;
+
+        if (!userId || isNaN(userId)) {
+            return res.status(400).json({ error: "ระบุ ID ผู้ใช้งานไม่ถูกต้อง" });
+        }
+
+        try {
+            const connection = db.promise ? db.promise() : db;
+
+            // 🏥 1. กรณีเป็น Hospital Admin (ดึงข้อมูลจากตาราง hospitals โดยตรง)
+            if (adminType === 'hospital_admin') {
+                const [hospRows] = await connection.query(`
+                    SELECT hospital_id, hospital_name, hospital_phone, email, address 
+                    FROM hospitals 
+                    WHERE hospital_id = ?
+                `, [userId]);
+
+                if (hospRows.length === 0) {
+                    return res.status(404).json({ error: "ไม่พบข้อมูลโรงพยาบาล" });
+                }
+
+                const hosp = hospRows[0];
+                return res.json({
+                    status: "success",
+                    role: "admin",
+                    admin_type: "hospital_admin",
+                    user: {
+                        user_id: hosp.hospital_id,
+                        firstname: hosp.hospital_name,
+                        lastname: '(Admin)',
+                        email: hosp.email,
+                        role: 1,
+                        admin_type: "hospital_admin",
+                        hospital_id: hosp.hospital_id,
+                        hospital_name: hosp.hospital_name
+                    }
+                });
+            }
+
+            // 🩺 2. กรณีเป็นแพทย์ (Doctor)
+            if (decoded.role === 'doctor') {
+                const [doctorRows] = await connection.query(`
+                    SELECT 
+                        d.id, d.name, d.doctor_code, d.specialty, d.role_type, d.doctor_status, d.hospital_id,
+                        h.hospital_name, h.hospital_phone
+                    FROM doctors d
+                    LEFT JOIN hospitals h ON d.hospital_id = h.hospital_id
+                    WHERE d.id = ?
+                `, [userId]);
+
+                if (doctorRows.length === 0) {
+                    return res.status(404).json({ error: "ไม่พบข้อมูลแพทย์" });
+                }
+
+                return res.json({
+                    status: "success",
+                    role: "doctor",
+                    user: doctorRows[0]
+                });
+            }
+
+            // 🛡️ 3. กรณีเป็น Super Admin หรือ ผู้ป่วยทั่วไป (Patient)
+            const [userRows] = await connection.query(
+                `SELECT u.*, 
+                        d.name AS doctor_name, 
+                        d.specialty AS doctor_specialty,
+                        h.hospital_name,
+                        h.hospital_phone
+                FROM user u 
+                LEFT JOIN doctors d ON u.doctor_id = d.id 
+                LEFT JOIN hospitals h ON u.hospital_id = h.hospital_id
+                WHERE u.user_id = ?`, 
+                [userId]
+            );
+
+            if (userRows.length === 0) {
+                return res.status(404).json({ error: "ไม่พบข้อมูลผู้ใช้ในระบบ" });
+            }
+
+            const user = userRows[0];
+            const roleName = user.role === 1 ? 'admin' : 'patient';
+            
+            return res.json({
+                status: "success",
+                role: roleName,
+                admin_type: adminType,
+                user: {
+                    ...user,
+                    admin_type: adminType
+                }
+            });
+
+        } catch (err) {
+            console.error("GetMe Server Error:", err);
+            return res.status(500).json({ error: "ดึงข้อมูลโปรไฟล์ล้มเหลว", details: err.message });
+        }
+    });
 };
 
 // 🛠️ 2. ระบบ getMe[cite: 15]

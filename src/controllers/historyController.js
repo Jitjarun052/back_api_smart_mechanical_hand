@@ -72,25 +72,42 @@ exports.deleteHistory = (req, res) => {
     });
 };
 
-exports.getDailyTrainSummary = (req, res) => {
-    // 💥 ใช้ DATE_FORMAT จัดกลุ่มข้อมูล history ตามวัน/เดือน/ปี เพื่อดึงรอบรวมและความแม่นยำเฉลี่ยออกรายวัน
-    // เปลี่ยนคอลัมน์ 'created_at' หรือชื่อฟิลด์วันที่ในตารางของคุณให้ตรงจุด (เช่น train_date หรือ timestamp)
-    const sql = `
-        SELECT DATE_FORMAT(created_at, '%Y-%m-%d') AS date,
-               SUM(count) AS count,
-               ROUND(AVG(accuracy), 0) AS percentage
-        FROM history
-        GROUP BY DATE_FORMAT(created_at, '%Y-%m-%d')
-        ORDER BY date ASC
-        LIMIT 15
-    `;
+exports.getDailyTrainSummary = async (req, res) => {
+    // 🔍 1. รับค่า hospital_id จาก Query Parameters ที่ส่งมาจากหน้าบ้าน (เช่น /history/daily-summary?hospital_id=5)
+    const hospitalId = req.query.hospital_id;
 
-    db.query(sql, (err, results) => {
-        if (err) {
-            return res.status(500).json({ error: "ไม่สามารถคำนวณข้อมูลสถิติได้", details: err.message });
+    try {
+        const connection = db.promise ? db.promise() : db;
+
+        // 💥 2. ปรับ Query ให้ JOIN กับตาราง user เพื่อกรองข้อมูลประวัติการฝึกเฉพาะคนไข้ที่สังกัดโรงพยาบาลนั้น ๆ
+        let sql = `
+            SELECT DATE_FORMAT(h.created_at, '%Y-%m-%d') AS date,
+                   SUM(h.count) AS count,
+                   ROUND(AVG(h.accuracy), 0) AS percentage
+            FROM history h
+            JOIN user u ON h.user_id = u.user_id
+            WHERE 1=1
+        `;
+        let params = [];
+
+        if (hospitalId) {
+            sql += ` AND u.hospital_id = ?`;
+            params.push(hospitalId);
         }
-        res.json(results);
-    });
+
+        sql += `
+            GROUP BY DATE_FORMAT(h.created_at, '%Y-%m-%d')
+            ORDER BY date ASC
+            LIMIT 15
+        `;
+
+        const [results] = await connection.query(sql, params);
+        return res.json(results);
+
+    } catch (err) {
+        console.error("Get Daily Train Summary Error:", err);
+        return res.status(500).json({ error: "ไม่สามารถคำนวณข้อมูลสถิติได้", details: err.message });
+    }
 };
 
 // 🩺 ดึงประวัติฝึกซ้อมเฉพาะผู้ป่วยรายบุคคล (สำหรับแพทย์/ผู้ป่วยส่องรายละเอียด)

@@ -1,25 +1,39 @@
 const db = require('../config/db');
 
 exports.getDashboardStats = (req, res) => {
-    // 💥 Query 1: นับจำนวนผู้ป่วยทั้งหมด (role = 0 คือผู้ป่วยทั่วไป)
-    const countPatientsSql = "SELECT COUNT(*) AS totalPatients FROM user WHERE role = 0";
-    
-    // 💥 Query 2: นับจำนวนอุปกรณ์ทั้งหมดในคลัง
-    const countDevicesSql = "SELECT COUNT(*) AS totalDevices FROM device";
-    
-    // 💥 Query 3: นับเฉพาะอุปกรณ์ที่มีคนเอาไปลงทะเบียนใช้งานแล้ว (user_id ไม่ใช่ 0 หรือไม่เป็น NULL)
-    const countRegisteredSql = "SELECT COUNT(*) AS registeredDevices FROM device WHERE user_id != 0 AND user_id IS NOT NULL";
+    // 🔍 1. รับค่า hospital_id จาก Query Parameters (เช่น /dashboard/stats?hospital_id=5)
+    const hospitalId = req.query.hospital_id;
 
-    db.query(countPatientsSql, (err, patientsRes) => {
+    // ถ้ามี hospital_id ให้กรองเฉพาะโรงพยาบาลนั้น ๆ ถ้าไม่มีให้ดึงทั้งหมด (เผื่อกรณี Super Admin)
+    let countPatientsSql = "SELECT COUNT(*) AS totalPatients FROM user WHERE role = 0";
+    let countDevicesSql = "SELECT COUNT(*) AS totalDevices FROM device";
+    let countRegisteredSql = "SELECT COUNT(*) AS registeredDevices FROM device WHERE user_id != 0 AND user_id IS NOT NULL";
+
+    let patientParams = [];
+    let deviceParams = [];
+    let registeredParams = [];
+
+    if (hospitalId) {
+        countPatientsSql += " AND hospital_id = ?";
+        patientParams.push(hospitalId);
+
+        countDevicesSql += " WHERE hospital_id = ?";
+        deviceParams.push(hospitalId);
+
+        countRegisteredSql += " AND hospital_id = ?";
+        registeredParams.push(hospitalId);
+    }
+
+    db.query(countPatientsSql, patientParams, (err, patientsRes) => {
         if (err) return res.status(500).json({ error: err.message });
         
-        db.query(countDevicesSql, (err, devicesRes) => {
+        db.query(countDevicesSql, deviceParams, (err, devicesRes) => {
             if (err) return res.status(500).json({ error: err.message });
             
-            db.query(countRegisteredSql, (err, registeredRes) => {
+            db.query(countRegisteredSql, registeredParams, (err, registeredRes) => {
                 if (err) return res.status(500).json({ error: err.message });
                 
-                // ส่งผลลัพธ์ยอดรวมสรุปกลับไปให้หน้าบ้าน React
+                // ส่งผลลัพธ์ยอดรวมสรุปแยกตามโรงพยาบาลกลับไปให้หน้าบ้าน
                 res.json({
                     totalPatients: patientsRes[0].totalPatients,
                     totalDevices: devicesRes[0].totalDevices,

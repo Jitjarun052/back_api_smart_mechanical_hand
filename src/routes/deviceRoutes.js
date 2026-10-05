@@ -4,7 +4,9 @@ const deviceController = require('../controllers/deviceController');
 
 router.get('/', deviceController.getAllDevices);              // GET: /api/device
 router.post('/add', deviceController.createDevice);           // POST: /api/device/add
+router.get('/check/:serial_number', deviceController.checkDeviceBySerial);
 router.put('/status/:id', deviceController.updateDeviceStatus); // PUT: /api/device/status/เลขID
+router.get('/available', deviceController.getAvailableDevices);
 
 // เพิ่ม Route สำหรับยกเลิกการผูกอุปกรณ์
 router.put('/unbind', deviceController.unbindDevice);

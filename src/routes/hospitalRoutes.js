@@ -7,5 +7,7 @@ router.get('/', hospitalController.getAllHospitals);
 router.delete('/:id', hospitalController.deleteHospital);
 router.get('/:id/details', hospitalController.getHospitalDetails);
 router.post('/', hospitalController.uploadHospital.single('image'), hospitalController.createHospital);
+router.put('/assign-device', hospitalController.assignDeviceToHospital);
+
 
 module.exports = router;
