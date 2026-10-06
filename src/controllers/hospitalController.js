@@ -78,20 +78,27 @@ exports.createHospital = async (req, res) => {
   const body = req.body || {}; 
   const hospital_name = body.hospital_name;
   const hospital_phone = body.hospital_phone;
-  const address = body.address; // บ้านเลขที่ / ซอย / ถนน
+  const address = body.address; 
   const subdistrict = body.subdistrict;
   const district = body.district;
   const province = body.province;
   const postal_code = body.postal_code;
+  
+  // 🟢 รับค่า email และ password ที่ส่งมาจากฝั่ง Frontend (React)
+  const email = body.email;
+  const password = body.password;
+  
   const image = req.file ? req.file.filename : null;
 
   if (!hospital_name) {
     return res.status(400).json({ error: "กรุณากรอกชื่อโรงพยาบาล" });
   }
 
-  try {
-    const credentials = generateHospitalCredentials(hospital_name);
+  if (!email || !password) {
+    return res.status(400).json({ error: "กรุณากรอกอีเมลและรหัสผ่านสำหรับผู้ดูแลระบบ" });
+  }
 
+  try {
     const sql = `
       INSERT INTO hospitals 
       (hospital_name, hospital_phone, address, subdistrict, district, province, postal_code, image, email, password) 
@@ -107,21 +114,21 @@ exports.createHospital = async (req, res) => {
       province || null,
       postal_code || null,
       image,
-      credentials.email,
-      credentials.password
+      email,     // 🟢 บันทึกอีเมลที่ผู้ใช้กรอก
+      password   // 🟢 บันทึกรหัสผ่านที่ผู้ใช้กรอก (แนะนำให้ใช้ bcrypt เข้ารหัสรหัสผ่านก่อนบันทึกด้วยครับ)
     ]);
 
     return res.status(201).json({ 
       status: "success", 
-      message: "เพิ่มโรงพยาบาลและสร้างบัญชีแอดมินสำเร็จ",
+      message: "เพิ่มโรงพยาบาลและบันทึกบัญชีแอดมินสำเร็จ",
       credentials: {
-        email: credentials.email,
-        password: credentials.password
+        email: email,
+        password: password
       }
     });
   } catch (err) {
     console.error("Create Hospital Error:", err);
-    return res.status(500).json({ error: "ไม่สามารถเพิ่มโรงพยาบาลได้" });
+    return res.status(500).json({ error: "ไม่สามารถเพิ่มโรงพยาบาลได้ (อีเมลอาจซ้ำในระบบ)" });
   }
 };
 
